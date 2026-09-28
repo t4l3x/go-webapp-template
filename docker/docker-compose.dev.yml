@@ -8,12 +8,14 @@ services:
       - ..:/app
     ports:
       - "8080:8080"
+    # ../.env holds host-side addresses (localhost:<published port>);
+    # `environment` overrides only what differs on the Docker network.
     env_file:
       - ../.env
     environment:
+      APP_SERVICE: api
       DB_DSN: postgres://postgres:postgres@postgres:5432/go_webapp_template?sslmode=disable
       REDIS_URL: redis://redis:6379/0
-      OTEL_EXPORTER_OTLP_ENDPOINT: otel-collector:4317
     depends_on:
       postgres:
         condition: service_healthy
@@ -38,6 +40,7 @@ services:
     env_file:
       - ../.env
     environment:
+      APP_SERVICE: worker
       DB_DSN: postgres://postgres:postgres@postgres:5432/go_webapp_template?sslmode=disable
       MAIL_HOST: mailpit
       MAIL_PORT: "1025"

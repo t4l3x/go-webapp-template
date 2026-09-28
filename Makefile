@@ -12,6 +12,9 @@ include make/dev.mk
 include make/go.mk
 include make/db.mk
 include make/docs.mk
+# template:start
+include make/template.mk
+# template:end
 
 
 .PHONY: help
@@ -56,3 +59,8 @@ help:
 	@echo "  openapi-generate   Regenerate Go types from docs/api/openapi.yaml"
 	@echo "  openapi-validate   Validate the OpenAPI document"
 	@echo "  openapi-check      Fail if generated OpenAPI types are stale"
+# template:start
+	@echo ""
+	@echo "Template:"
+	@echo "  template-check     Smoke-test scripts/init-template.sh on a temporary copy"
+# template:end

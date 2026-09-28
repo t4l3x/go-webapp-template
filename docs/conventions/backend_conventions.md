@@ -277,6 +277,13 @@ Deployment environments decide the actual value.
 
 Docker Compose overrides container-network-specific values.
 
+Locally, `.env` holds the host-side value (`localhost:<published port>`),
+which host tooling (`make run`, `make migrate-*`) uses as is; Compose's
+`environment:` block replaces only the addresses that differ inside the
+Docker network. Integration tests get their own variables
+(`DB_DSN_TEST_ADMIN`, `REDIS_URL_TEST`) because they target separate,
+disposable instances — a different dependency, not a different address.
+
 ---
 
 ## 5. HTTP Architecture

@@ -14,7 +14,13 @@
 # /vN major-version suffix). It is used, in these forms, for:
 #   kebab   payment-service   Compose project, container names, JWT issuer, mail domain
 #   snake   payment_service   Postgres database names
-#   title   Payment Service   OpenAPI title, email copy
+#   title   Payment Service   OpenAPI title, email copy, README title
+#
+# It also removes what only makes sense in the template itself: the
+# <!-- template:start/end --> blocks in README.md, the "# template:start/
+# end" blocks in the Makefile, and the template smoke test
+# (scripts/template-check.sh, make/template.mk). Generic values — process
+# names (api/worker), ports, TTLs, limits — are left alone.
 #
 # Portable across GNU and BSD userlands (Linux, macOS): no sed -i, no
 # GNU-only flags, bash 3.2 compatible.
@@ -29,6 +35,13 @@ readonly TEMPLATE_TITLE="Go Webapp Template"
 # Files describing the template itself; rewriting them would point the
 # "how to use this template" instructions at the new project.
 readonly SKIP_FILES="scripts/init-template.sh docs/guides/new_project_from_template.md"
+
+# Template-only files, meaningless (and broken) once the placeholders
+# they test for are gone.
+readonly TEMPLATE_ONLY_FILES="scripts/template-check.sh make/template.mk"
+
+# Files carrying template-only blocks between start/end marker lines.
+readonly MARKED_FILES="README.md Makefile"
 
 die() {
   echo "init-template: $*" >&2
@@ -107,6 +120,25 @@ OLD_MODULE="$(awk '$1 == "module" { print $2; exit }' go.mod)"
 if [ "$OLD_MODULE" = "$NEW_MODULE" ] && ! grep -rIq --exclude-dir=.git -e "$TEMPLATE_KEBAB" -e "$TEMPLATE_SNAKE" . ; then
   die "nothing to do: module is already $NEW_MODULE and no template placeholders remain"
 fi
+
+# --- drop template-only content -----------------------------------------------
+
+for file in $MARKED_FILES; do
+  [ -f "$file" ] || continue
+  grep -q 'template:start' "$file" || continue
+  tmp="$(mktemp)"
+  awk '/template:start/ { skip = 1; next } /template:end/ { skip = 0; next } !skip' "$file" >"$tmp"
+  cat "$tmp" >"$file"
+  rm -f "$tmp"
+  echo "  stripped template-only block from $file"
+done
+
+for file in $TEMPLATE_ONLY_FILES; do
+  if [ -f "$file" ]; then
+    rm -f "$file"
+    echo "  removed $file"
+  fi
+done
 
 # --- rewrite files ------------------------------------------------------------
 
@@ -188,9 +220,19 @@ Template initialized.
 
 Next steps:
   1. Review the changes:           git diff
-  2. Create your local env file:   cp .env.example .env   (then set real secrets)
+  2. Create your local env file:   cp .env.example .env   (dev defaults work as is)
   3. Start dependencies and run:   make up && make migrate-up
   4. Run the full checks:          make check-full && make test-integration
   5. Commit:                       git add -A && git commit -m "Initialize $PROJECT_NAME from template"
-  6. Optionally delete scripts/init-template.sh and docs/guides/new_project_from_template.md.
+
+Still yours to customize (the script deliberately leaves these alone):
+  - README.md intro and docs/api/openapi.yaml info.description / info.version
+  - Email wording: internal/modules/identity/translations/en.toml
+  - Sender address: MAIL_FROM (placeholder no-reply@$PROJECT_NAME.local in
+    .env.example and internal/platform/mail/config.go) -> a domain you own
+  - APP_PUBLIC_URL: your frontend's origin (verification links point there)
+  - AUTH_JWT_SECRET / AUTH_EMAIL_VERIFICATION_SECRET: real random values in
+    every non-local environment (the .env.example ones are dev-only)
+  - A LICENSE file, if the project needs one
+  - Optionally delete scripts/init-template.sh and docs/guides/new_project_from_template.md
 EOF

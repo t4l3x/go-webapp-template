@@ -19,28 +19,33 @@ migrate-create:
 		-format 20060102150405 \
 		$(name)
 
+# migrate-up/down/version run golang-migrate on the host, against DB_DSN
+# from .env — the host-side address (localhost:5432) of the dev Postgres
+# started by `make up`. The containers see a different DB_DSN only
+# because Compose overrides it; nothing here needs to know about that.
+# The application never migrates on startup.
 migrate-up:
 	@$(ENV_LOAD); \
-	: "$${DB_DSN_HOST:?DB_DSN_HOST is required}"; \
+	: "$${DB_DSN:?DB_DSN is required: cp .env.example .env}"; \
 	$(MIGRATE) \
 		-path $(MIGRATIONS_DIR) \
-		-database "$${DB_DSN_HOST}" \
+		-database "$${DB_DSN}" \
 		up
 
 migrate-down:
 	@$(ENV_LOAD); \
-	: "$${DB_DSN_HOST:?DB_DSN_HOST is required}"; \
+	: "$${DB_DSN:?DB_DSN is required: cp .env.example .env}"; \
 	$(MIGRATE) \
 		-path $(MIGRATIONS_DIR) \
-		-database "$${DB_DSN_HOST}" \
+		-database "$${DB_DSN}" \
 		down 1
 
 migrate-version:
 	@$(ENV_LOAD); \
-	: "$${DB_DSN_HOST:?DB_DSN_HOST is required}"; \
+	: "$${DB_DSN:?DB_DSN is required: cp .env.example .env}"; \
 	$(MIGRATE) \
 		-path $(MIGRATIONS_DIR) \
-		-database "$${DB_DSN_HOST}" \
+		-database "$${DB_DSN}" \
 		version
 
 # migrate-test applies the full up chain and then the full down chain
@@ -48,7 +53,7 @@ migrate-version:
 # verifying migrations are both forward-applicable and reversible.
 migrate-test:
 	@$(ENV_LOAD); \
-	: "$${DB_DSN_TEST_ADMIN:?DB_DSN_TEST_ADMIN is required}"; \
+	: "$${DB_DSN_TEST_ADMIN:?DB_DSN_TEST_ADMIN is required: cp .env.example .env}"; \
 	set -e; \
 	$(COMPOSE_TEST) up -d --wait; \
 	db="app_test_migrate_$$$$"; \
@@ -65,7 +70,7 @@ migrate-test:
 	test_dsn="$$base/$$db$$query"; \
 	echo "creating database $$db"; \
 	$(COMPOSE_TEST) exec -T postgres psql -U postgres -d postgres -c "CREATE DATABASE $$db"; \
-	trap '$(COMPOSE_TEST) exec -T postgres psql -U postgres -d postgres -c "DROP DATABASE IF EXISTS $$db WITH (FORCE)"' EXIT; \
+	trap '$(COMPOSE_TEST) exec -T postgres psql -U postgres -d postgres -c "DROP DATABASE IF EXISTS $$db WITH (FORCE)"; $(COMPOSE_TEST) down' EXIT; \
 	echo "applying up migrations"; \
 	$(MIGRATE) -path $(MIGRATIONS_DIR) -database "$$test_dsn" up; \
 	echo "reversing down migrations"; \

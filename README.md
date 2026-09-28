@@ -13,43 +13,96 @@ What's included:
 - **Distributed rate limiting** — Redis GCRA, fails open.
 - **Contract-first OpenAPI** — `docs/api/openapi.yaml` generates the
   transport types.
-- **Localization** of emails, structured logging, OpenTelemetry, request
-  IDs, panic recovery, CORS, trusted-proxy client IP resolution.
+- Localized emails, structured JSON logging, request IDs, panic recovery,
+  CORS, trusted-proxy client IP resolution.
 
-## Start a new project
+<!-- template:start -->
+## Start a new project from this template
 
-Every real project needs its own Go module path — don't keep this
-template's module path and don't use relative imports.
+Every real project needs its own Go module path. Don't keep this
+template's module path, and don't use relative imports.
 
-**A. Recommended: GitHub template.** Click *Use this template* on GitHub,
-clone the new repository, then:
+1. On GitHub, click **Use this template → Create a new repository**.
+2. Create the new repository (e.g. `acme/payment-service`).
+3. Clone it:
+   `git clone git@github.com:acme/payment-service.git && cd payment-service`
+4. Initialize it:
+
+   ```sh
+   ./scripts/init-template.sh github.com/acme/payment-service payment-service
+   ```
+
+5. Copy the environment file: `cp .env.example .env`
+6. Start the stack as described in [Local development](#local-development).
+
+The **Use this template** button appears only once the template's owner
+has enabled *Settings → General → Template repository* on GitHub. Without
+it, clone the template instead, point `origin` at your own repository,
+and run the same script. See
+[docs/guides/new_project_from_template.md](docs/guides/new_project_from_template.md)
+for what the script changes, the manual-clone flow, and `gonew`.
+<!-- template:end -->
+
+## Local development
+
+Requires Go (version in `go.mod`), Docker with Compose v2, and `make`.
 
 ```sh
-./scripts/init-template.sh github.com/acme/payment-service payment-service
+cp .env.example .env   # works as is: dev-only defaults, never commit .env
+make up                # Postgres, Redis, Mailpit, API (hot reload), worker
+make migrate-up        # apply db/migrations (never run automatically)
+curl localhost:8080/health
 ```
 
-**B. Manual clone.** Clone or copy this repository, point Git at your own
-repository (`git remote set-url origin <your-repo-url>`, or `rm -rf .git
-&& git init`), then run the same script.
+| What | Where |
+| --- | --- |
+| API | http://localhost:8080 (`/api/v1/...`, `/health`) |
+| Mailpit (sent email) | http://localhost:8025 |
+| Postgres / Redis | `localhost:5432` / `localhost:6379` |
 
-The script rewrites the module path and project-name placeholders, runs
-`go mod tidy`, `gofmt`, `go build` and `go test`, and prints next steps.
-The project name is optional (defaults to the module path's last
-element). Details, including a `gonew` alternative:
-[docs/guides/new_project_from_template.md](docs/guides/new_project_from_template.md).
+`make help` lists every target. `make run` / `make run-worker` run a
+process on the host instead of in Docker (stop its container first:
+`docker stop go-webapp-template-api`). The email-verification flow is
+walked through in [docs/guides/local_mail.md](docs/guides/local_mail.md).
 
-## Quick start
+Before committing: `make check-full` and `make test-integration`
+(integration tests use a separate, disposable Postgres and Redis on ports
+5434 / 6380).
 
-Requires Go (see `go.mod`) and Docker.
+## Configuration contexts
+
+The same variable holds a different address depending on where the
+process runs. There is one variable per dependency (`DB_DSN`, not
+`DB_DSN_HOST` / `DB_DSN_DOCKER`); what changes is who supplies the value:
+
+| Context | Who runs there | `DB_DSN` host part | Value comes from |
+| --- | --- | --- | --- |
+| Host machine | `make run`, `make run-worker`, `make migrate-*` | `localhost:5432` (published port) | `.env` |
+| Docker network | `api` / `worker` containers from `make up` | `postgres:5432` (service name) | `.env`, overridden in `docker/docker-compose.dev.yml` |
+| Production | deployed processes, migration job | managed database endpoint | deployment config / secret store |
+
+`REDIS_URL` and `MAIL_HOST` follow the same pattern. Integration tests use
+their own `DB_DSN_TEST_ADMIN` / `REDIS_URL_TEST` so they can never touch
+development data.
+
+## Troubleshooting
+
+**Leftover containers from an older project name.** Compose resources
+are named after the project (`make up` uses `go-webapp-template`). If you
+ran this code earlier under another name, its containers may still hold
+ports 5432/6379/8080. Inspect and stop them without touching data:
 
 ```sh
-cp .env.example .env      # then replace the change-me secrets
-make up                   # Postgres, Redis, Mailpit, API, worker, tracing
-make migrate-up
-make help                 # every target
+docker ps -a --format '{{.Names}}\t{{.Status}}'
+docker compose -p <old-project-name> down      # removes containers, keeps volumes
+docker volume ls
 ```
 
-Before committing: `make check-full` and `make test-integration`.
+`docker compose -p <old-project-name> down -v` **also deletes that
+project's volumes, i.e. its local database data**. Only run it if you
+want that data gone. `make down` never removes volumes.
+
+**`missing .env`** — run `cp .env.example .env`.
 
 ## Layout
 

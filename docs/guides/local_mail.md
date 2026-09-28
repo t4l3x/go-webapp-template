@@ -22,11 +22,13 @@ running — it's the container's exposed port either way.
 
 ```sh
 # Everything in Docker (api, worker, postgres, mailpit, ...):
-docker compose -f docker/docker-compose.dev.yml up
+make up && make migrate-up
 
-# Or: infra in Docker, worker on the host —
-# set MAIL_HOST=localhost (the default) instead of MAIL_HOST=mailpit
-# in your shell/.env before running:
+# Or: infra in Docker, worker on the host. .env already says
+# MAIL_HOST=localhost (Compose overrides it to mailpit only inside the
+# worker container), so no change is needed — just stop the container
+# worker first so only one worker is polling:
+docker stop go-webapp-template-worker
 make run-worker
 ```
 

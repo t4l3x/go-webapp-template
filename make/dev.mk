@@ -1,12 +1,17 @@
-.PHONY: up down rebuild logs sh ps debug
+.PHONY: up down rebuild logs sh ps debug env-file
 
-up:
+# The dev containers load ../.env (docker-compose.dev.yml env_file), so
+# fail with the fix instead of Compose's bare "env file not found".
+env-file:
+	@test -f .env || { echo "missing .env: run 'cp .env.example .env' first" >&2; exit 1; }
+
+up: env-file
 	$(COMPOSE_DEV) up -d
 
 down:
 	$(COMPOSE_DEV) down
 
-rebuild:
+rebuild: env-file
 	$(COMPOSE_DEV) up -d --build
 
 logs:

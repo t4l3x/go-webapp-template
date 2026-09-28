@@ -4,11 +4,11 @@ GO_TOOL := go tool -modfile=tools/go.mod
 
 run:
 	@$(ENV_LOAD); \
-	go run ./cmd/api
+	APP_SERVICE=api go run ./cmd/api
 
 run-worker:
 	@$(ENV_LOAD); \
-	go run ./cmd/worker
+	APP_SERVICE=worker go run ./cmd/worker
 
 test:
 	go test ./...
@@ -22,8 +22,8 @@ test-race:
 # instances. It never runs as part of `test`.
 test-integration:
 	@$(ENV_LOAD); \
-	: "$${DB_DSN_TEST_ADMIN:?DB_DSN_TEST_ADMIN is required}"; \
-	: "$${REDIS_URL_TEST:?REDIS_URL_TEST is required}"; \
+	: "$${DB_DSN_TEST_ADMIN:?DB_DSN_TEST_ADMIN is required: cp .env.example .env}"; \
+	: "$${REDIS_URL_TEST:?REDIS_URL_TEST is required: cp .env.example .env}"; \
 	set -e; \
 	$(COMPOSE_TEST) up -d --wait; \
 	trap '$(COMPOSE_TEST) down' EXIT; \
