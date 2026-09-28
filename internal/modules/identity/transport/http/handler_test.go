@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"strings"
 	"sync"
 	"testing"
@@ -15,12 +16,20 @@ import (
 	"github.com/t4l3x/go-webapp-template/internal/modules/identity/application"
 	"github.com/t4l3x/go-webapp-template/internal/modules/identity/domain"
 	identityhttp "github.com/t4l3x/go-webapp-template/internal/modules/identity/transport/http"
-	"github.com/t4l3x/go-webapp-template/internal/platform/httpserver/clientip"
+	"github.com/t4l3x/go-webapp-template/internal/platform/httpserver/requestctx"
 	"github.com/t4l3x/go-webapp-template/internal/platform/httpserver/response"
 	"github.com/t4l3x/go-webapp-template/internal/testkit"
 )
 
 func newTestHandler(t *testing.T) (*identityhttp.Handler, *fakeUserRepository, *fakeTokenManager) {
+	t.Helper()
+
+	handler, users, _, tokens := newTestHandlerWithSessions(t)
+
+	return handler, users, tokens
+}
+
+func newTestHandlerWithSessions(t *testing.T) (*identityhttp.Handler, *fakeUserRepository, *fakeSessionRepository, *fakeTokenManager) {
 	t.Helper()
 
 	logger, _ := testkit.NewLogger()
@@ -40,11 +49,12 @@ func newTestHandler(t *testing.T) (*identityhttp.Handler, *fakeUserRepository, *
 		application.NewRefreshService(sessions, users, tokens, application.SessionConfig{RefreshTokenTTL: time.Hour}),
 		application.NewLogoutService(sessions),
 		application.NewGetMeService(users),
-		clientip.NewResolver(nil),
+		nil, // verifyEmail: covered by verification_test.go
+		nil, // resendVerification: covered by verification_test.go
 		responder,
 	)
 
-	return handler, users, tokens
+	return handler, users, sessions, tokens
 }
 
 func TestHandler_Register_Created(t *testing.T) {
@@ -148,6 +158,56 @@ func TestHandler_Login_Success(t *testing.T) {
 	}
 	if got.AccessToken == "" || got.RefreshToken == "" {
 		t.Fatalf("expected non-empty tokens, got %+v", got)
+	}
+}
+
+// TestHandler_Login_RecordsContextClientIP pins that the session's IP
+// is the one the platform ClientIP middleware resolved and stored — not
+// a second resolution of RemoteAddr or of a forwarded header.
+func TestHandler_Login_RecordsContextClientIP(t *testing.T) {
+	handler, users, sessions, _ := newTestHandlerWithSessions(t)
+	mustRegisterUser(t, users, "user@example.com", "supersecretpassword")
+
+	body := `{"email":"user@example.com","password":"supersecretpassword"}`
+	req := newJSONRequest(http.MethodPost, "/api/v1/auth/login", body)
+	req.RemoteAddr = "198.51.100.7:1234"
+	req.Header.Set("X-Forwarded-For", "192.0.2.1")
+	req = req.WithContext(requestctx.WithClientIP(req.Context(), netip.MustParseAddr("203.0.113.9")))
+	rec := httptest.NewRecorder()
+
+	handler.Login(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d, body = %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+
+	var got []string
+	for _, session := range sessions.all() {
+		if session.IPAddress != nil {
+			got = append(got, *session.IPAddress)
+		}
+	}
+	if len(got) != 1 || got[0] != "203.0.113.9" {
+		t.Fatalf("session IPs = %v, want [203.0.113.9]", got)
+	}
+}
+
+func TestHandler_Login_UnresolvedClientIPIsNil(t *testing.T) {
+	handler, users, sessions, _ := newTestHandlerWithSessions(t)
+	mustRegisterUser(t, users, "user@example.com", "supersecretpassword")
+
+	body := `{"email":"user@example.com","password":"supersecretpassword"}`
+	rec := httptest.NewRecorder()
+
+	handler.Login(rec, newJSONRequest(http.MethodPost, "/api/v1/auth/login", body))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+	for _, session := range sessions.all() {
+		if session.IPAddress != nil {
+			t.Fatalf("IPAddress = %q, want nil when no client IP was resolved", *session.IPAddress)
+		}
 	}
 }
 
@@ -426,6 +486,18 @@ type fakeSessionRepository struct {
 
 func newFakeSessionRepository() *fakeSessionRepository {
 	return &fakeSessionRepository{sessions: make(map[uuid.UUID]*domain.Session)}
+}
+
+func (r *fakeSessionRepository) all() []domain.Session {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	out := make([]domain.Session, 0, len(r.sessions))
+	for _, session := range r.sessions {
+		out = append(out, *session)
+	}
+
+	return out
 }
 
 func (r *fakeSessionRepository) Create(_ context.Context, session *domain.Session) error {

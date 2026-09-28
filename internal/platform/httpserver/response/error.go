@@ -52,8 +52,9 @@ func (r *Responder) Error(
 
 	r.logError(req, err, appErr)
 
-	JSON(
+	r.JSON(
 		w,
+		req,
 		status,
 		ErrorResponse{
 			Error: ErrorBody{

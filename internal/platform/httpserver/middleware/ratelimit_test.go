@@ -220,13 +220,17 @@ func serveWithResolver(
 		w.WriteHeader(http.StatusOK)
 	})
 
-	handler := middleware.RateLimit(
-		limiter,
-		resolver,
-		response.NewResponder(logger),
-		ratelimit.PerMinute(10),
-		exempt,
-	)(next)
+	// As in the router: ClientIP resolves once, RateLimit reads it.
+	handler := middleware.Chain(
+		next,
+		middleware.ClientIP(resolver),
+		middleware.RateLimit(
+			limiter,
+			response.NewResponder(logger),
+			ratelimit.PerMinute(10),
+			exempt,
+		),
+	)
 
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)

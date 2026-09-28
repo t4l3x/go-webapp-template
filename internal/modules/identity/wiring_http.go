@@ -60,7 +60,6 @@ var HTTPModule = fx.Module(
 		},
 		application.NewVerifyEmailService,
 		application.NewResendEmailVerificationService,
-		identityhttp.NewVerificationHandler,
 
 		// Identity's endpoint limits, adapted from the module's root
 		// Config into the narrow shape its transport needs — the same

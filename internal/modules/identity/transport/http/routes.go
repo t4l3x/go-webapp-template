@@ -13,7 +13,6 @@ const apiV1Prefix = "/api/v1"
 
 func NewRoutes(
 	handler *Handler,
-	verification *VerificationHandler,
 	authMiddleware *AuthMiddleware,
 	rateLimiter *RateLimiter,
 	policies RateLimitPolicies,
@@ -36,9 +35,9 @@ func NewRoutes(
 		httpserver.POST("/auth/refresh", rateLimited(scopeRefresh, policies.Refresh, handler.Refresh)),
 		httpserver.POST("/auth/logout", authenticated(handler.Logout)),
 		httpserver.GET("/auth/me", authenticated(handler.GetMe)),
-		httpserver.POST("/auth/verify-email", rateLimited(scopeVerifyEmail, policies.LoginIP, verification.Verify)),
+		httpserver.POST("/auth/verify-email", rateLimited(scopeVerifyEmail, policies.LoginIP, handler.VerifyEmail)),
 		httpserver.POST("/auth/resend-verification", middleware.Chain(
-			rateLimited(scopeResendVerification, policies.Register, verification.Resend), authMiddleware.Authenticate),
+			rateLimited(scopeResendVerification, policies.Register, handler.ResendVerification), authMiddleware.Authenticate),
 		),
 	)
 }

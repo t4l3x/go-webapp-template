@@ -82,12 +82,3 @@ func bearerToken(r *http.Request) (string, bool) {
 
 	return token, true
 }
-
-func userAgent(r *http.Request) *string {
-	agent := strings.TrimSpace(r.UserAgent())
-	if agent == "" {
-		return nil
-	}
-
-	return &agent
-}

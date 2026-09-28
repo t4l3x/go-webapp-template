@@ -46,7 +46,7 @@ func NewRouter(
 ) (http.Handler, error) {
 	mux := http.NewServeMux()
 
-	mux.HandleFunc("GET /health", health)
+	mux.HandleFunc("GET /health", health(responder))
 
 	if err := registerRoutes(mux, params.Routes); err != nil {
 		return nil, err
@@ -59,7 +59,9 @@ func NewRouter(
 	// Order matters, outermost first:
 	//
 	//   RequestID  every request gets an id, including rejected ones
-	//   AccessLog  a 429 is still logged, with that id
+	//   ClientIP   resolves the caller once (trusted-proxy policy); the
+	//              access log, limiters and handlers all read that value
+	//   AccessLog  a 429 is still logged, with that id and address
 	//   Recovery   catches panics from everything inside, limiter included
 	//   CORS       429s carry CORS headers so a browser can read them;
 	//              preflight OPTIONS is answered here and never spends
@@ -69,12 +71,12 @@ func NewRouter(
 		mux,
 
 		middleware.RequestID,
+		middleware.ClientIP(resolver),
 		middleware.AccessLog(httpLogger),
 		middleware.Recovery(responder),
 		middleware.CORS(cfg.CORSAllowedOrigins),
 		middleware.RateLimit(
 			limiter,
-			resolver,
 			responder,
 			rateLimitCfg.GlobalPolicy(),
 			operationalPaths,
@@ -111,15 +113,8 @@ func registerRoutes(mux *http.ServeMux, routes []Route) error {
 	return nil
 }
 
-func health(
-	w http.ResponseWriter,
-	_ *http.Request,
-) {
-	response.JSON(
-		w,
-		http.StatusOK,
-		map[string]string{
-			"status": "ok",
-		},
-	)
+func health(responder *response.Responder) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		responder.JSON(w, r, http.StatusOK, map[string]string{"status": "ok"})
+	}
 }

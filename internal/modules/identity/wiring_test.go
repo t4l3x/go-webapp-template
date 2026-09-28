@@ -18,7 +18,6 @@ import (
 	"github.com/t4l3x/go-webapp-template/internal/modules/identity/application"
 	"github.com/t4l3x/go-webapp-template/internal/modules/identity/infrastructure/security"
 	"github.com/t4l3x/go-webapp-template/internal/platform/httpserver"
-	"github.com/t4l3x/go-webapp-template/internal/platform/httpserver/clientip"
 	"github.com/t4l3x/go-webapp-template/internal/platform/httpserver/response"
 	"github.com/t4l3x/go-webapp-template/internal/platform/localization"
 	"github.com/t4l3x/go-webapp-template/internal/platform/mail"
@@ -312,7 +311,6 @@ func stubDependencies() fx.Option {
 		func() *pgxpool.Pool { return nil },
 		func() *slog.Logger { return slog.New(slog.DiscardHandler) },
 		func() config.App { return config.App{PublicURL: "https://app.example.com"} },
-		func() *clientip.Resolver { return clientip.NewResolver(nil) },
 		func() mail.Sender { return stubSender{} },
 		func() ratelimit.Limiter { return stubLimiter{} },
 		response.NewResponder,

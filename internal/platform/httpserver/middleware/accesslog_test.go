@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/t4l3x/go-webapp-template/internal/platform/httpserver/clientip"
 	"github.com/t4l3x/go-webapp-template/internal/platform/httpserver/middleware"
 	"github.com/t4l3x/go-webapp-template/internal/testkit"
 )
@@ -19,10 +20,16 @@ func TestAccessLog_RecordsRequestFields(t *testing.T) {
 		_, _ = w.Write([]byte(`{"ok":true}`))
 	})
 
-	handler := middleware.RequestID(middleware.AccessLog(logger)(next))
+	handler := middleware.Chain(
+		next,
+		middleware.RequestID,
+		middleware.ClientIP(clientip.NewResolver(nil)),
+		middleware.AccessLog(logger),
+	)
 
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/resource?token=secret", nil)
+	req.RemoteAddr = "198.51.100.7:1234"
 
 	handler.ServeHTTP(rec, req)
 
@@ -48,6 +55,9 @@ func TestAccessLog_RecordsRequestFields(t *testing.T) {
 	}
 	if id, ok := entry["request_id"].(string); !ok || id == "" {
 		t.Fatalf("expected a non-empty request_id field, got %v", entry["request_id"])
+	}
+	if entry["client_ip"] != "198.51.100.7" {
+		t.Fatalf("client_ip = %v, want %q (the address ClientIP resolved)", entry["client_ip"], "198.51.100.7")
 	}
 }
 

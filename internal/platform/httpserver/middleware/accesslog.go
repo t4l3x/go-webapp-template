@@ -24,6 +24,7 @@ func AccessLog(logger *slog.Logger) Middleware {
 			logger.Info(
 				"http request",
 				"request_id", requestctx.RequestID(r.Context()),
+				"client_ip", clientIPAttr(r),
 				"method", r.Method,
 				"path", r.URL.Path,
 				"status", metrics.Code,
@@ -32,4 +33,15 @@ func AccessLog(logger *slog.Logger) Middleware {
 			)
 		})
 	}
+}
+
+// clientIPAttr renders the address ClientIP resolved, or "" when it is
+// unknown, rather than netip.Addr's "invalid IP".
+func clientIPAttr(r *http.Request) string {
+	addr := requestctx.ClientIP(r.Context())
+	if !addr.IsValid() {
+		return ""
+	}
+
+	return addr.String()
 }

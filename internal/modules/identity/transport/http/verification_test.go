@@ -15,6 +15,7 @@ import (
 	"github.com/t4l3x/go-webapp-template/internal/modules/identity/domain"
 	"github.com/t4l3x/go-webapp-template/internal/modules/identity/infrastructure/security"
 	identityhttp "github.com/t4l3x/go-webapp-template/internal/modules/identity/transport/http"
+	"github.com/t4l3x/go-webapp-template/internal/platform/httpserver/response"
 )
 
 type httpVerificationStore struct {
@@ -33,7 +34,20 @@ func (s *httpVerificationStore) Replace(_ context.Context, v *domain.EmailVerifi
 	return s.err
 }
 
-func TestVerificationHandlerDecodesAndMapsErrors(t *testing.T) {
+// newVerificationHandler builds a Handler wired only with the
+// verification use cases; the session use cases are unused here.
+func newVerificationHandler(
+	t *testing.T,
+	verify *application.VerifyEmailService,
+	resend *application.ResendEmailVerificationService,
+	responder *response.Responder,
+) *identityhttp.Handler {
+	t.Helper()
+
+	return identityhttp.NewHandler(nil, nil, nil, nil, nil, verify, resend, responder)
+}
+
+func TestHandler_VerifyEmail_DecodesAndMapsErrors(t *testing.T) {
 	signer := security.NewVerificationSigner(security.VerificationTokenConfig{Secret: strings.Repeat("s", 32)})
 	token := signer.SignVerificationToken(uuid.New(), time.Now().Add(time.Hour))
 	for _, tc := range []struct {
@@ -52,11 +66,11 @@ func TestVerificationHandlerDecodesAndMapsErrors(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			store := &httpVerificationStore{err: tc.storeErr}
-			h := identityhttp.NewVerificationHandler(application.NewVerifyEmailService(store, signer), nil, mustResponder(t))
+			h := newVerificationHandler(t, application.NewVerifyEmailService(store, signer), nil, mustResponder(t))
 			req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/verify-email", strings.NewReader(tc.body))
 			req.Header.Set("Content-Type", tc.contentType)
 			rec := httptest.NewRecorder()
-			h.Verify(rec, req)
+			h.VerifyEmail(rec, req)
 			if rec.Code != tc.wantStatus || store.calls != tc.wantCalls {
 				t.Fatalf("status=%d calls=%d body=%s", rec.Code, store.calls, rec.Body)
 			}
@@ -70,11 +84,11 @@ func TestVerificationHandlerDecodesAndMapsErrors(t *testing.T) {
 	}
 }
 
-func TestResendRequiresAuthenticationAndUsesPrincipal(t *testing.T) {
+func TestHandler_ResendVerification_RequiresAuthenticationAndUsesPrincipal(t *testing.T) {
 	for _, authenticated := range []bool{false, true} {
 		store := &httpVerificationStore{}
 		responder := mustResponder(t)
-		h := identityhttp.NewVerificationHandler(nil, application.NewResendEmailVerificationService(store, application.ResendVerificationConfig{TTL: time.Hour}), responder)
+		h := newVerificationHandler(t, nil, application.NewResendEmailVerificationService(store, application.ResendVerificationConfig{TTL: time.Hour}), responder)
 		tokens := newFakeTokenManager()
 		id := uuid.New()
 		tokens.claims = application.AccessTokenClaims{UserID: id, SessionID: uuid.New()}
@@ -82,7 +96,7 @@ func TestResendRequiresAuthenticationAndUsesPrincipal(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		handler := identityhttp.NewAuthMiddleware(tokens, responder).Authenticate(http.HandlerFunc(h.Resend))
+		handler := identityhttp.NewAuthMiddleware(tokens, responder).Authenticate(http.HandlerFunc(h.ResendVerification))
 		req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/resend-verification", nil)
 		if authenticated {
 			req.Header.Set("Authorization", "Bearer "+access)

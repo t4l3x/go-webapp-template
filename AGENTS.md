@@ -69,11 +69,15 @@ Adding an endpoint? Follow
 - Errors: return `apperror.Error` (`Kind`, stable `Code`, `Message`);
   `response.Responder` turns it into the HTTP status + JSON envelope.
   Never leak an internal error's message/cause to the client.
+- All response writing goes through `response.Responder`:
+  `JSON`, `NoContent`, `Status` (bodiless, e.g. 202), `Error`. No
+  `w.WriteHeader`/`json.NewEncoder(w)` in handlers.
 - JSON decoding goes through `platform/httpserver/request.DecodeJSON`
   (size limit, Content-Type check, unknown-field rejection) — don't
   hand-roll `json.NewDecoder` in a handler.
-- Client IP goes through `platform/httpserver/clientip.Resolver` — never
-  read `X-Forwarded-For`/`X-Real-IP` directly.
+- Client IP is resolved once per request by the `middleware.ClientIP`
+  (via `clientip.Resolver`) and read with `requestctx.ClientIP(ctx)` —
+  never resolve again, never read `X-Forwarded-For`/`X-Real-IP` directly.
 
 ## OpenAPI
 
@@ -148,14 +152,15 @@ Adding an endpoint? Follow
 - Platform owns mechanics + the generic per-IP limit; modules own their
   endpoints' limits (identity's `AUTH_RATE_LIMIT_*`). Don't add an env
   var per route.
-- Client IP comes from `clientip.Resolver`. Never read forwarded headers
-  in a limiter — a caller that picks its own IP picks its own bucket.
+- Client IP comes from `requestctx.ClientIP` (resolved once by
+  `middleware.ClientIP`). Never read forwarded headers in a limiter — a
+  caller that picks its own IP picks its own bucket.
 - Keys are built by `ratelimit`, never by a handler. Only per-IP keys
   exist today, and IPs stay plaintext. Don't add a keyed-hash mechanism
   for other subjects until a limit actually needs one.
 - `/health` and `/ready` are exempt — 429ing a liveness probe restarts
   healthy pods.
-- Order: RequestID → AccessLog → Recovery → CORS → RateLimit → router.
+- Order: RequestID → ClientIP → AccessLog → Recovery → CORS → RateLimit → router.
 - Denied: 429, `rate_limit_exceeded`, `Retry-After` in whole seconds
   rounded up. Only `Retry-After` — no `RateLimit-*` draft headers.
 - **Fails open**: Redis down → request proceeds, logged at Warn with the

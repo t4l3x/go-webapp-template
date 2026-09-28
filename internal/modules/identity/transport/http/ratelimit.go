@@ -3,8 +3,8 @@ package http
 import (
 	"net/http"
 
-	"github.com/t4l3x/go-webapp-template/internal/platform/httpserver/clientip"
 	"github.com/t4l3x/go-webapp-template/internal/platform/httpserver/middleware"
+	"github.com/t4l3x/go-webapp-template/internal/platform/httpserver/requestctx"
 	"github.com/t4l3x/go-webapp-template/internal/platform/httpserver/response"
 	"github.com/t4l3x/go-webapp-template/internal/platform/ratelimit"
 )
@@ -48,26 +48,24 @@ type RateLimitPolicies struct {
 // endpoints get on top.
 type RateLimiter struct {
 	limiter   ratelimit.Limiter
-	clientIP  *clientip.Resolver
 	responder *response.Responder
 	policies  RateLimitPolicies
 }
 
 func NewRateLimiter(
 	limiter ratelimit.Limiter,
-	clientIP *clientip.Resolver,
 	responder *response.Responder,
 	policies RateLimitPolicies,
 ) *RateLimiter {
 	return &RateLimiter{
 		limiter:   limiter,
-		clientIP:  clientIP,
 		responder: responder,
 		policies:  policies,
 	}
 }
 
-// PerIP limits a scope by resolved client address.
+// PerIP limits a scope by the client address the platform ClientIP
+// middleware resolved for this request.
 //
 // Applied as route middleware, so a rejected request never reaches the
 // handler — and on login, never reaches password verification. That
@@ -77,7 +75,7 @@ func NewRateLimiter(
 func (l *RateLimiter) PerIP(scope string, policy ratelimit.Policy) middleware.Middleware {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			key := ratelimit.NewIPKey(scope, l.clientIP.ClientIP(r))
+			key := ratelimit.NewIPKey(scope, requestctx.ClientIP(r.Context()))
 
 			result, err := l.limiter.Allow(r.Context(), key, policy)
 			if err != nil || result.Allowed {

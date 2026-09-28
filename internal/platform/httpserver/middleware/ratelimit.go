@@ -7,7 +7,7 @@ import (
 	"time"
 
 	"github.com/t4l3x/go-webapp-template/internal/apperror"
-	"github.com/t4l3x/go-webapp-template/internal/platform/httpserver/clientip"
+	"github.com/t4l3x/go-webapp-template/internal/platform/httpserver/requestctx"
 	"github.com/t4l3x/go-webapp-template/internal/platform/httpserver/response"
 	"github.com/t4l3x/go-webapp-template/internal/platform/ratelimit"
 )
@@ -29,7 +29,8 @@ var ErrRateLimited = apperror.New(
 // wraps.
 //
 // Its place in the chain is deliberate (see httpserver.NewRouter):
-// inside RequestID and AccessLog, so a rejected request is still
+// inside ClientIP, which resolves the address it keys on; inside
+// RequestID and AccessLog, so a rejected request is still
 // logged and correlatable; inside Recovery, so a panic in here is
 // caught like any other; inside CORS, so a 429 carries the CORS
 // headers a browser needs to read it, and so preflight OPTIONS — which
@@ -42,7 +43,6 @@ var ErrRateLimited = apperror.New(
 // which reads as an unhealthy process and gets a healthy one restarted.
 func RateLimit(
 	limiter ratelimit.Limiter,
-	resolver *clientip.Resolver,
 	responder *response.Responder,
 	policy ratelimit.Policy,
 	exempt []string,
@@ -60,10 +60,11 @@ func RateLimit(
 				return
 			}
 
-			// Resolved through the trusted-proxy policy, never read from
-			// a forwarded header here: a caller that could choose its
-			// own IP could choose an unused bucket per request.
-			key := ratelimit.NewIPKey(globalScope, resolver.ClientIP(r))
+			// Resolved once by the ClientIP middleware through the
+			// trusted-proxy policy, never read from a forwarded header
+			// here: a caller that could choose its own IP could choose an
+			// unused bucket per request.
+			key := ratelimit.NewIPKey(globalScope, requestctx.ClientIP(r.Context()))
 
 			result, err := limiter.Allow(r.Context(), key, policy)
 			if err != nil || result.Allowed {

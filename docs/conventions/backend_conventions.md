@@ -416,12 +416,16 @@ Shared HTTP serialization belongs under:
 platform/httpserver/response/
 ```
 
-Use shared helpers rather than manually setting JSON headers in every handler.
-
-Example:
+`response.Responder` owns every response write: status, content type,
+JSON encoding (encoded before any header is sent, so an encoding failure
+still becomes a clean 500) and the related logging. Handlers never call
+`w.WriteHeader` or encode JSON themselves.
 
 ```go
-response.JSON(w, http.StatusOK, value)
+h.responder.JSON(w, r, http.StatusOK, newSomethingResponse(out))
+h.responder.NoContent(w, r)                    // 204
+h.responder.Status(w, r, http.StatusAccepted)  // other bodiless statuses
+h.responder.Error(w, r, err)
 ```
 
 Error responses follow one shape:
@@ -1144,6 +1148,14 @@ input for several unrelated future concerns (rate limiting, auth
 auditing, abuse detection) — it is infrastructure, not one module's
 business logic.
 
+It is resolved exactly once per request: `middleware.ClientIP` (right
+after `RequestID`) stores the result in the context, and the access log,
+the generic and module rate limiters, and handlers all read
+`requestctx.ClientIP(ctx)`. Nothing else calls the resolver, so no two
+consumers can disagree about who the client is. Handlers convert it to
+the application's `*string` input at the transport edge (nil when
+unknown).
+
 ---
 
 ## 25. OpenAPI Contract
@@ -1574,9 +1586,9 @@ Operational endpoints (`/health`, `/ready`) are exempt. Rate-limiting a
 liveness probe is an outage mode: the probe source starts getting 429s,
 which reads as an unhealthy process and gets a healthy one restarted.
 
-Middleware order is `RequestID → AccessLog → Recovery → CORS →
-RateLimit → router`. Rejected requests are still given an id and
-logged, a limiter panic is still recovered, a 429 still carries CORS
+Middleware order is `RequestID → ClientIP → AccessLog → Recovery → CORS →
+RateLimit → router`. Rejected requests are still given an id, a
+resolved client address, and logged, a limiter panic is still recovered, a 429 still carries CORS
 headers, preflight OPTIONS never spends allowance, and the router never
 runs for a denied request.
 

@@ -11,6 +11,7 @@ import (
 	identityhttp "github.com/t4l3x/go-webapp-template/internal/modules/identity/transport/http"
 	"github.com/t4l3x/go-webapp-template/internal/platform/httpserver"
 	"github.com/t4l3x/go-webapp-template/internal/platform/httpserver/clientip"
+	"github.com/t4l3x/go-webapp-template/internal/platform/httpserver/middleware"
 	"github.com/t4l3x/go-webapp-template/internal/platform/httpserver/response"
 	"github.com/t4l3x/go-webapp-template/internal/platform/ratelimit"
 )
@@ -24,7 +25,7 @@ func testPolicies() identityhttp.RateLimitPolicies {
 }
 
 func testRateLimiter(limiter ratelimit.Limiter, responder *response.Responder) *identityhttp.RateLimiter {
-	return identityhttp.NewRateLimiter(limiter, clientip.NewResolver(nil), responder, testPolicies())
+	return identityhttp.NewRateLimiter(limiter, responder, testPolicies())
 }
 
 // TestRoutes_SensitiveEndpointsAreRateLimited walks the real route
@@ -38,7 +39,6 @@ func TestRoutes_SensitiveEndpointsAreRateLimited(t *testing.T) {
 
 	routes, err := identityhttp.NewRoutes(
 		handler,
-		identityhttp.NewVerificationHandler(nil, nil, responder),
 		identityhttp.NewAuthMiddleware(newFakeTokenManager(), responder),
 		testRateLimiter(limiter, responder),
 		testPolicies(),
@@ -67,15 +67,18 @@ func TestRoutes_SensitiveEndpointsAreRateLimited(t *testing.T) {
 			rec := httptest.NewRecorder()
 			req := httptest.NewRequest(http.MethodPost, tc.path, strings.NewReader(`{}`))
 			req.RemoteAddr = "198.51.100.7:1234"
+			req.Header.Set("X-Forwarded-For", "192.0.2.1") // untrusted peer: must be ignored
 			req.Header.Set("Authorization", "Bearer valid-access-token")
 
-			route.Handler.ServeHTTP(rec, req)
+			// The router resolves the client IP once, before any route
+			// middleware; reproduce that here.
+			middleware.ClientIP(clientip.NewResolver(nil))(route.Handler).ServeHTTP(rec, req)
 
 			if rec.Code != http.StatusTooManyRequests {
 				t.Fatalf("status = %d, want %d", rec.Code, http.StatusTooManyRequests)
 			}
-			if len(limiter.keys) == 0 || !strings.HasPrefix(limiter.keys[0], tc.wantScope+":ip:") {
-				t.Fatalf("keys = %v, want the first keyed on %q by IP", limiter.keys, tc.wantScope)
+			if want := tc.wantScope + ":ip:198.51.100.7"; len(limiter.keys) == 0 || limiter.keys[0] != want {
+				t.Fatalf("keys = %v, want the first to be %q", limiter.keys, want)
 			}
 			if rec.Header().Get("Retry-After") != "20" {
 				t.Fatalf("Retry-After = %q, want %q", rec.Header().Get("Retry-After"), "20")

@@ -257,7 +257,6 @@ type Handler struct {
 	logout         *application.LogoutService
 	getMe          *application.GetMeService
 	changePassword *application.ChangePasswordService // new
-	clientIP       *clientip.Resolver
 	responder      *response.Responder
 }
 ```
@@ -266,9 +265,13 @@ type Handler struct {
 the matching addition — Fx passes the extra constructor argument
 automatically once it's part of the signature.)
 
-Then the handler itself, following the same
+Then the handler itself, in `handler.go` next to the others, following the same
 **decode → call use case → map → write** shape every other handler
-uses:
+uses. Every write goes through the responder (`JSON`, `NoContent`,
+`Status`, `Error`); a handler never calls `w.WriteHeader` itself. If it
+needs the caller's IP, it reads the value the platform middleware
+already resolved (`requestctx.ClientIP(r.Context())`, see `clientIP` in
+`handler.go`) — never the resolver or a header:
 
 ```go
 func (h *Handler) ChangePassword(w http.ResponseWriter, r *http.Request) {
@@ -294,7 +297,7 @@ func (h *Handler) ChangePassword(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	w.WriteHeader(http.StatusNoContent)
+	h.responder.NoContent(w, r)
 }
 ```
 
@@ -360,7 +363,7 @@ and call it from the handler instead of building the response type
 inline:
 
 ```go
-response.JSON(w, http.StatusOK, newSomethingResponse(out))
+h.responder.JSON(w, r, http.StatusOK, newSomethingResponse(out))
 ```
 
 If a generated response type has a field that's awkward to populate
