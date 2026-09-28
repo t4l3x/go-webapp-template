@@ -12,6 +12,7 @@ include make/dev.mk
 include make/go.mk
 include make/db.mk
 include make/docs.mk
+include make/licenses.mk
 # template:start
 include make/template.mk
 # template:end
@@ -59,6 +60,10 @@ help:
 	@echo "  openapi-generate   Regenerate Go types from docs/api/openapi.yaml"
 	@echo "  openapi-validate   Validate the OpenAPI document"
 	@echo "  openapi-check      Fail if generated OpenAPI types are stale"
+	@echo ""
+	@echo "Licenses:"
+	@echo "  licenses           Regenerate THIRD_PARTY_LICENSES.txt"
+	@echo "  licenses-check     Enforce the dependency license allowlist; fail if the report is stale"
 # template:start
 	@echo ""
 	@echo "Template:"

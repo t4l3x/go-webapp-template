@@ -962,6 +962,28 @@ Do not wrap third-party dependencies merely for theoretical replaceability.
 
 Create abstractions around meaningful architectural/business boundaries.
 
+### Licensing
+
+This repository's own code is Apache-2.0 (`LICENSE`). Dependencies keep
+their own licenses.
+
+- **Imported modules** are covered by the dependency license report. After
+  changing dependencies, run `make licenses` and commit
+  `THIRD_PARTY_LICENSES.txt`. `make licenses-check` (CI) fails on a
+  license outside the allowlist in `make/licenses.mk`, on an unidentified
+  license, or on a stale report. A failing license is a decision for a
+  human. Never widen the allowlist, add an `--ignore`, or drop the
+  dependency just to make the check pass. Strong copyleft (GPL, AGPL) is
+  never allowed by default.
+- **Copied third-party source** is anything taken from elsewhere and put
+  into this repository instead of imported: Go files, Lua scripts,
+  templates, vendored or generated code. It must keep its original
+  copyright and license notice, either as the file header or as a
+  `LICENSE` file next to it. Never remove or rewrite upstream license
+  headers. Never paste a third-party implementation into our own files
+  as if it were ours. Keep copied code in its own file with its notice,
+  and check that its license is in the allowlist.
+
 ---
 
 ## 20. General Engineering Rules

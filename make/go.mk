@@ -62,4 +62,4 @@ vuln:
 
 check: fmt-check tidy-check vet test openapi-validate
 
-check-full: check test-race lint vuln openapi-check
+check-full: check test-race lint vuln openapi-check licenses-check

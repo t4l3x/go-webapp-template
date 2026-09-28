@@ -219,9 +219,23 @@ Adding an endpoint? Follow
   compatibility need). Keep `go.mod`, both Dockerfiles, and any
   version-specific docs in sync when bumping.
 
+## Licensing
+
+- Our code is Apache-2.0 (`LICENSE`); dependencies keep their own.
+- Changed dependencies → `make licenses`, commit
+  `THIRD_PARTY_LICENSES.txt` (generated, never hand-edited).
+  `make licenses-check` enforces the allowlist in `make/licenses.mk`.
+  A license outside it is a human decision — never widen the list,
+  `--ignore` it, or remove the dependency to go green.
+- Copied third-party code (Go, Lua, templates, vendored/generated code)
+  keeps its original copyright/license notice in its own file. Never
+  strip upstream headers or paste someone else's implementation into
+  our files unattributed.
+
 ## Before finishing
 
 `gofmt -l .`, `go build ./...`, `go vet ./...`, `go test ./...`,
-`go test -race ./...` must all pass. Passing tests alone isn't
+`go test -race ./...` must all pass. After a dependency change,
+`make licenses-check` must too. Passing tests alone isn't
 "correct" — check concurrency, failure ordering, and error/security
 behavior too.

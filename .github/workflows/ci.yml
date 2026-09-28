@@ -1,0 +1,53 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      - name: Format, tidy, vet, test, OpenAPI validate
+        run: make check
+
+      - name: Race tests
+        run: make test-race
+
+      - name: Lint
+        run: make lint
+
+      - name: Generated OpenAPI types are current
+        run: make openapi-check
+
+      # Fails on a dependency license outside the allowlist in
+      # make/licenses.mk, on an unidentifiable license, or on a stale
+      # THIRD_PARTY_LICENSES.txt.
+      - name: Third-party licenses
+        run: make licenses-check
+
+  integration:
+    runs-on: ubuntu-latest
+    env:
+      DB_DSN_TEST_ADMIN: postgres://postgres:postgres@localhost:5434/postgres?sslmode=disable
+      REDIS_URL_TEST: redis://localhost:6380/0
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      - name: Integration tests
+        run: make test-integration
+
+      - name: Migration chain up/down
+        run: make migrate-test

@@ -226,13 +226,14 @@ Next steps:
   5. Commit:                       git add -A && git commit -m "Initialize $PROJECT_NAME from template"
 
 Still yours to customize (the script deliberately leaves these alone):
-  - README.md intro and docs/api/openapi.yaml info.description / info.version
+  - README.md intro and copyright line; docs/api/openapi.yaml info.description / info.version
   - Email wording: internal/modules/identity/translations/en.toml
   - Sender address: MAIL_FROM (placeholder no-reply@$PROJECT_NAME.local in
     .env.example and internal/platform/mail/config.go) -> a domain you own
   - APP_PUBLIC_URL: your frontend's origin (verification links point there)
   - AUTH_JWT_SECRET / AUTH_EMAIL_VERIFICATION_SECRET: real random values in
     every non-local environment (the .env.example ones are dev-only)
-  - A LICENSE file, if the project needs one
+  - LICENSE: the template's Apache-2.0 text; keep it or replace it with
+    your project's license (THIRD_PARTY_LICENSES.txt stays generated)
   - Optionally delete scripts/init-template.sh and docs/guides/new_project_from_template.md
 EOF
