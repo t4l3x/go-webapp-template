@@ -1541,16 +1541,173 @@ translation, or localization middleware with no consumer.
 
 ## 33. Rate Limiting
 
+Abuse protection is layered; each layer does only what it is placed to
+do well:
+
+```text
+CDN / WAF / API gateway        coarse DDoS and IP reputation, before traffic reaches Go
+Go global HTTP limiter         generic per-IP allowance for every /api request
+module endpoint limiters       per-IP limits on sensitive endpoints
+                               (identity: register, login, refresh, verify-email, resend)
+application/domain rules       login risk rules (identity: failed logins per account+IP,
+                               5 / 15 min, before password hashing) and per-account
+                               business limits (identity: resend cooldown + 24h cap)
+```
+
+### Login abuse protection
+
+Login gets two independent layers, deliberately not one limiter:
+
+```text
+HTTP (transport)       15 login requests / minute / IP         ratelimit.Policy
+Application (security) 5 failed attempts / account+IP / 15 min LoginRiskEvaluator
+Future                 account-wide progressive delay/challenge for distributed failures
+```
+
+`LoginService` consults a `LoginRiskEvaluator` (Strategy) before the
+password hash is verified and reports successful logins to it. The only
+rule today is `AccountIPFailureRule`, backed by a `LoginFailureCounter`
+port whose Redis adapter keys on `HMAC-SHA256(AUTH_ABUSE_KEY_SECRET,
+normalized email)` plus the client IP — no raw address ever reaches
+Redis. Each attempt reserves a slot atomically *before* verification, so
+a burst of concurrent guesses cannot race past the threshold; a success
+deletes the counter, so only failures accumulate. The window is fixed at
+the first attempt. A refusal is the same `rate_limit_exceeded` 429 as the
+IP limit, so it reveals neither which limit fired nor whether the account
+exists. The counter fails open like the HTTP limiters.
+
+It never locks an account: only the offending account+IP pair is
+throttled, so the owner signing in from anywhere else is unaffected.
+Account-wide protection against distributed guessing is future work and
+must not be a hard block — it should combine progressive delay or a
+challenge with trusted-device recognition.
+
+Operational notes:
+
+- **It is a hard deny for that pair.** After 5 failures, even the right
+  password from that IP is refused until the window ends. Users behind a
+  shared address (offices, hotels, carrier-grade NAT) share the pair, so
+  one person's typos can block a colleague on the same account. That is
+  acceptable for a starter; a real product may prefer progressive delay
+  or a challenge at this layer instead of a deny — a new `RiskAction`,
+  not a new limiter.
+- **Unknown addresses follow the same path.** The bucket is reserved for
+  the normalized supplied address whether or not an account exists, and
+  every attempt that names an account — unknown, password-less, wrong
+  password, disabled — costs one password verification (a throwaway hash
+  where there is no real one) and returns the same `invalid_credentials`.
+  "Account disabled" is only reported after the correct password. None
+  of these paths may become cheaper or observably different.
+- **Fail-open must be loud, not a log storm.** If Redis is down, the
+  counter allows the attempt. Every such check increments an OTel counter
+  — `auth_abuse_protection_unavailable` (and, for the HTTP limiters,
+  `rate_limit_protection_unavailable`; Prometheus shows both as
+  `*_total`) — while logs are limited to one Error on the transition, an
+  Error summary at most once a minute with the failure count, and one
+  Info on recovery (`observability.ProtectionSignal`). Alert on the
+  counters' rate or the transition log. While they fire, login
+  brute-force protection and the distributed rate limits are both off —
+  edge/WAF protection is the remaining defense, so production must have
+  one.
+- **The dummy hash is precomputed.** `NewLoginService` hashes a
+  throwaway password once at startup through the configured hasher, so
+  it always has the current Argon2 parameters; requests only *verify*
+  against it. Changing the parameters needs no extra step.
+
+Invariants — keep these when changing anything here:
+
+1. **Authentication never depends on observability.** `ProtectionSignal`
+   and security events sit beside the request path, not in it: counter
+   updates are in-memory (the OTel SDK exports asynchronously), no
+   network I/O happens on a request, and an exporter or collector
+   failure can never turn a login into a 500 or delay it. Instrument
+   creation may fail startup; recording never fails a request.
+2. **Metric attributes stay bounded.** Low-cardinality values such as
+   `scope=identity.login.account_ip` only — never IP, email, user ID, a
+   Redis key or any other per-subject value as an OTel attribute.
+3. **It is timing equalization, not constant time.** Every account path
+   does exactly one Argon2 verification, which removes by far the
+   largest observable difference; database, cache and network paths can
+   still differ slightly. Don't describe or rely on it as constant-time.
+4. **Redis down disables both** the distributed HTTP limits and
+   account+IP protection. Failing open is the deliberate availability
+   choice; the transition logs and counters exist to make it visible,
+   and edge/WAF protection is what remains meanwhile.
+
+Operations: alert on the protection *state* and outage duration (the
+"unavailable" transition log, or a counter that keeps increasing over a
+window), not on raw counter volume — ten thousand increments during one
+Redis outage are one incident. A 0/1 "degraded" gauge would make
+duration alerts simpler; add it when a real alerting setup needs it.
+
+Scope: the starter's login-abuse layer is complete. The next change here
+should be a genuinely new capability — trusted devices with
+progressive account-wide friction, MFA/passkeys, or challenge handling —
+not more abstraction or more variants of IP counting.
+- **Rotating `AUTH_ABUSE_KEY_SECRET` resets all failure counters** (the
+  keys are HMACs under it). That is expected, not data loss: at worst an
+  attacker regains one window's allowance. Old keys expire on their own.
+- **Keep the seam small.** One rule does not justify a rule registry,
+  policy factory, decision engine or context builder. A second rule
+  becomes a composite evaluator; anything more waits for real rules that
+  need it. The same goes for `SecurityEvents`: one tiny method, one log
+  consumer, until audit/metrics consumers exist.
+
+Where future pieces go:
+
+```text
+Middleware                request ID, client IP, coarse rate limiting, auth, request-level bot protection
+Ports & Adapters          CAPTCHA/challenge verifier, MFA provider, passkeys/WebAuthn,
+                          breached-password checker, external risk intelligence
+Evaluator rules (chain)   trusted-device recognition, account-wide progressive throttling,
+                          login risk rules, suspicious-login checks
+Events                    identity.login.failed / .throttled today; challenge_required,
+                          risk_high, mfa.failed later
+```
+
+A second rule is added as a composite `LoginRiskEvaluator` in wiring
+(run rules in order, keep the strictest decision), and each new
+`RiskAction` (Delay, Challenge, RequireMFA) arrives with the rule that
+returns it. Security outcomes are published through
+`application.SecurityEvents`; alerting, audit logs and metrics subscribe
+to that port (structured logs are the first consumer) instead of being
+written into `LoginService` or the handler. Events carry user id, client
+IP and an internal reason — never the email or password.
+
+Trusted devices, when built: a cryptographically random, server-signed
+device token in an `HttpOnly`, `Secure` cookie with an appropriate
+`SameSite`; never the User-Agent as device identity; and recognition only
+lowers friction (skips a throttle or challenge) — it is never an
+authentication factor on its own.
+
+Anything keyed by IP can be sidestepped by changing IP, so a rule that
+must hold per user — "one verification email per minute for this
+account" — belongs in the last layer. There it is computed from durable
+business records under the account's row lock, in the same transaction
+as the write, so neither a new address nor concurrent requests get
+around it (see identity's `domain.ResendPolicy` and
+`VerificationStore.Replace`). It throttles with an exact `Retry-After`;
+it never locks the account. Account-wide rules of that kind apply only
+to authenticated actions: an account-keyed block on login would let
+anyone who knows an address deny that user their own logins — which is
+why login's account rule is scoped to account+IP (above).
+
+`ratelimit.Policy` is the reusable abstraction. A module lists its
+endpoint policies in a plain struct in its transport package (identity's
+`RateLimitPolicies`), filled from its own config — there is no
+cross-module policy interface, provider, or registry.
+
 Rate limiting is distributed, backed by Redis (`platform/redis`,
 `go-redis`), so a limit is shared across every API process rather than
 being per-instance. The GCRA algorithm comes from `redis_rate` and runs
 as a Lua script inside Redis — never read-modify-write in Go, which
 would let two processes both see the last free slot and both take it.
 
-`redis_rate` and `go-redis` types must not appear outside
-`platform/ratelimit`'s Redis adapter. Modules depend on `Policy`,
-`Key`, `Result`, and `Limiter`. Do not call `redis_rate` from a feature
-module.
+`redis_rate` types must not appear outside `platform/ratelimit`'s Redis
+adapter; for HTTP limits, modules depend on `Policy`, `Key`, `Result`,
+and `Limiter`. A module's own abuse counter (identity's login failures)
+is an ordinary infrastructure adapter using go-redis behind an
+application port, the way a repository uses pgx.
 
 The split of responsibility:
 
@@ -1568,19 +1725,20 @@ specifically, and everything else is covered by the generic limit.
 Defaults are conservative starting points — tune from real traffic
 before treating them as load-bearing.
 
-Client IP must come from `platform/httpserver/clientip`, which applies
-the trusted-proxy policy. Never read `X-Forwarded-For` or `X-Real-IP` in
-a limiter: a caller that can choose its own IP can choose an unused
+Client IP must come from `requestctx.ClientIP`, resolved once by
+`middleware.ClientIP` through the trusted-proxy policy
+(`platform/httpserver/clientip`). Never read `X-Forwarded-For` or
+`X-Real-IP` in a limiter: a caller that can choose its own IP can choose an unused
 bucket per request and is effectively unlimited.
 
 Keys are built by `ratelimit`, never assembled by a handler. Only
 per-IP keys exist today. IPs stay in the clear — they are not
 credentials, are already in access logs, and staying greppable is
-useful during an incident. If a limit is ever keyed on a personal
-identifier (an email address, say), that subject must be normalized
-(see `internal/validation`) and keyed-hashed before it reaches Redis —
-a Redis instance is a far softer target than the database — but that
-mechanism is added with its first consumer, not ahead of it.
+useful during an incident. A personal identifier (an email address) is
+normalized (see `internal/validation`) and keyed-hashed before it
+reaches Redis — a Redis instance is a far softer target than the
+database. Identity's login failure counter does exactly that, with
+HMAC-SHA256 under the dedicated `AUTH_ABUSE_KEY_SECRET`.
 
 Operational endpoints (`/health`, `/ready`) are exempt. Rate-limiting a
 liveness probe is an outage mode: the probe source starts getting 429s,
@@ -1600,7 +1758,10 @@ exists invites a rejection loop. Only `Retry-After` is sent; the
 adopted.
 
 **Limiter failures fail open.** Redis unavailable means the request
-proceeds, logged at Warn with the scope. A limiter is protective, not
+proceeds; each such check increments `rate_limit_protection_unavailable`
+(OTel counter, with the scope), and the outage is logged on transition,
+as a once-a-minute summary, and on recovery — never per request, which
+during an attack would be a log storm. A limiter is protective, not
 an authorization boundary — making Redis able to reject all traffic
 turns an optional dependency into a global single point of failure,
 which is worse and far likelier than the abuse window while it is down.

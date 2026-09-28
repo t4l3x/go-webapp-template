@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/t4l3x/go-webapp-template/internal/modules/identity/application"
 	"github.com/t4l3x/go-webapp-template/internal/modules/identity/domain"
@@ -18,6 +19,119 @@ import (
 	"github.com/t4l3x/go-webapp-template/internal/modules/identity/infrastructure/security"
 	"github.com/t4l3x/go-webapp-template/internal/testkit"
 )
+
+// noResendLimit lets tests that exercise replacement itself resend
+// immediately after registering; the resend policy has its own tests.
+var noResendLimit = domain.ResendPolicy{Cooldown: time.Nanosecond, MaxPerWindow: 1000}
+
+var resendPolicy = domain.ResendPolicy{Cooldown: time.Minute, MaxPerWindow: 3}
+
+func countRows(t *testing.T, ctx context.Context, pool *pgxpool.Pool, query string) int {
+	t.Helper()
+	var n int
+	if err := pool.QueryRow(ctx, query).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	return n
+}
+
+// TestResendCooldownCountsRegistrationAndWritesNothingWhenRefused: the
+// registration email starts the cooldown, and a refused resend leaves
+// no credential and no queued mail behind.
+func TestResendCooldownCountsRegistrationAndWritesNothingWhenRefused(t *testing.T) {
+	pool := testkit.NewPostgresTestDB(t, identityTestDBPrefix)
+	ctx := context.Background()
+	user, v, event := newRegistration(t, "cooldown@example.com")
+	if err := postgres.NewRegistrationStore(pool).Register(ctx, user, v, event); err != nil {
+		t.Fatal(err)
+	}
+
+	err := postgres.NewVerificationStore(pool).Replace(ctx, domain.NewEmailVerification(user.ID, time.Hour), resendPolicy)
+
+	var limited *domain.ResendLimitError
+	if !errors.As(err, &limited) || limited.RetryAfter() <= 0 || limited.RetryAfter() > time.Minute {
+		t.Fatalf("Replace() = %v, want ResendLimitError with 0 < RetryAfter <= 1m", err)
+	}
+	if n := countRows(t, ctx, pool, `SELECT count(*) FROM email_verifications`); n != 1 {
+		t.Fatalf("email_verifications = %d, want 1 (refusal must not write)", n)
+	}
+	if n := countRows(t, ctx, pool, `SELECT count(*) FROM outbox_events`); n != 1 {
+		t.Fatalf("outbox_events = %d, want 1 (refusal must not queue mail)", n)
+	}
+	if ok, err := postgres.NewVerificationStore(pool).CanDeliver(ctx, event); err != nil || !ok {
+		t.Fatalf("refused resend invalidated the registration link: %v %v", ok, err)
+	}
+}
+
+// TestResendDailyCapCountsReplacedCredentials: replaced (consumed) rows
+// still count toward the rolling cap.
+func TestResendDailyCapCountsReplacedCredentials(t *testing.T) {
+	pool := testkit.NewPostgresTestDB(t, identityTestDBPrefix)
+	ctx := context.Background()
+	user, v, event := newRegistration(t, "cap@example.com")
+	if err := postgres.NewRegistrationStore(pool).Register(ctx, user, v, event); err != nil {
+		t.Fatal(err)
+	}
+	store := postgres.NewVerificationStore(pool)
+	capOnly := domain.ResendPolicy{Cooldown: time.Nanosecond, MaxPerWindow: 3}
+
+	for i := range 2 { // registration + 2 resends = 3 = the cap
+		if err := store.Replace(ctx, domain.NewEmailVerification(user.ID, time.Hour), capOnly); err != nil {
+			t.Fatalf("resend %d: %v", i+1, err)
+		}
+	}
+
+	err := store.Replace(ctx, domain.NewEmailVerification(user.ID, time.Hour), capOnly)
+	var limited *domain.ResendLimitError
+	if !errors.As(err, &limited) || limited.RetryAfter() < domain.ResendWindow-time.Minute || limited.RetryAfter() > domain.ResendWindow {
+		t.Fatalf("Replace() = %v, want ResendLimitError with RetryAfter ~ %s", err, domain.ResendWindow)
+	}
+}
+
+// TestConcurrentResendsCannotBypassCooldown: the policy is checked under
+// the user row lock, so of many simultaneous resends exactly one wins.
+func TestConcurrentResendsCannotBypassCooldown(t *testing.T) {
+	pool := testkit.NewPostgresTestDB(t, identityTestDBPrefix)
+	ctx := context.Background()
+	user, v, event := newRegistration(t, "concurrent@example.com")
+	v.CreatedAt = v.CreatedAt.Add(-2 * time.Hour) // registration mail is outside the cooldown
+	if err := postgres.NewRegistrationStore(pool).Register(ctx, user, v, event); err != nil {
+		t.Fatal(err)
+	}
+	store := postgres.NewVerificationStore(pool)
+
+	const attempts = 8
+	start := make(chan struct{})
+	results := make(chan error, attempts)
+	var wg sync.WaitGroup
+	for range attempts {
+		wg.Go(func() {
+			<-start
+			results <- store.Replace(ctx, domain.NewEmailVerification(user.ID, time.Hour), resendPolicy)
+		})
+	}
+	close(start)
+	wg.Wait()
+	close(results)
+
+	accepted := 0
+	for err := range results {
+		var limited *domain.ResendLimitError
+		switch {
+		case err == nil:
+			accepted++
+		case errors.As(err, &limited):
+		default:
+			t.Fatal(err)
+		}
+	}
+	if accepted != 1 {
+		t.Fatalf("accepted %d concurrent resends, want exactly 1", accepted)
+	}
+	if n := countRows(t, ctx, pool, `SELECT count(*) FROM outbox_events`); n != 2 {
+		t.Fatalf("outbox_events = %d, want 2 (registration + one resend)", n)
+	}
+}
 
 func TestVerificationLifecycle(t *testing.T) {
 	pool := testkit.NewPostgresTestDB(t, identityTestDBPrefix)
@@ -31,7 +145,7 @@ func TestVerificationLifecycle(t *testing.T) {
 		t.Fatalf("initial delivery=%v %v", ok, err)
 	}
 	second := domain.NewEmailVerification(user.ID, time.Hour)
-	if err := store.Replace(ctx, second); err != nil {
+	if err := store.Replace(ctx, second, noResendLimit); err != nil {
 		t.Fatal(err)
 	}
 	if ok, err := store.CanDeliver(ctx, event); err != nil || ok {
@@ -55,7 +169,7 @@ func TestVerificationLifecycle(t *testing.T) {
 	if ok, err := store.CanDeliver(ctx, next); err != nil || ok {
 		t.Fatalf("consumed delivery=%v %v", ok, err)
 	}
-	if err := store.Replace(ctx, domain.NewEmailVerification(user.ID, time.Hour)); err != nil {
+	if err := store.Replace(ctx, domain.NewEmailVerification(user.ID, time.Hour), noResendLimit); err != nil {
 		t.Fatal(err)
 	}
 	var verified *time.Time
@@ -146,7 +260,10 @@ func TestConcurrentVerifyAndResendLeaveConsistentState(t *testing.T) {
 	verifyResult := make(chan error, 1)
 	resendResult := make(chan error, 1)
 	go func() { <-start; verifyResult <- store.Consume(ctx, v.ID, v.ExpiresAt) }()
-	go func() { <-start; resendResult <- store.Replace(ctx, domain.NewEmailVerification(user.ID, time.Hour)) }()
+	go func() {
+		<-start
+		resendResult <- store.Replace(ctx, domain.NewEmailVerification(user.ID, time.Hour), noResendLimit)
+	}()
 	close(start)
 	verifyErr, resendErr := <-verifyResult, <-resendResult
 	if resendErr != nil {
@@ -183,7 +300,7 @@ func TestResendRollbackPreservesPreviousCredential(t *testing.T) {
 		t.Fatal(err)
 	}
 	store := postgres.NewVerificationStore(pool)
-	if err := store.Replace(ctx, domain.NewEmailVerification(user.ID, time.Hour)); err == nil {
+	if err := store.Replace(ctx, domain.NewEmailVerification(user.ID, time.Hour), noResendLimit); err == nil {
 		t.Fatal("expected delivery insert failure")
 	}
 	if ok, err := store.CanDeliver(ctx, event); err != nil || !ok {

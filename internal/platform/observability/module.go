@@ -7,6 +7,10 @@ import (
 var Module = fx.Module(
 	"observability",
 
-	fx.Provide(NewLogger),
+	fx.Provide(
+		NewLogger,
+		LoadMetricsConfig,
+		NewMeterProvider,
+	),
 	fx.Invoke(SetDefaultLogger),
 )

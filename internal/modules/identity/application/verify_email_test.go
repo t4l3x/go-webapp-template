@@ -19,14 +19,16 @@ type verificationStore struct {
 	err         error
 	consumed    uuid.UUID
 	replacement *domain.EmailVerification
+	policy      domain.ResendPolicy
 }
 
 func (s *verificationStore) Consume(_ context.Context, id uuid.UUID, _ time.Time) error {
 	s.consumed = id
 	return s.err
 }
-func (s *verificationStore) Replace(_ context.Context, v *domain.EmailVerification) error {
+func (s *verificationStore) Replace(_ context.Context, v *domain.EmailVerification, policy domain.ResendPolicy) error {
 	s.replacement = v
+	s.policy = policy
 	return s.err
 }
 
@@ -66,6 +68,26 @@ func TestVerifyEmailMapsPersistenceOutcome(t *testing.T) {
 		if !errors.As(err, &appErr) || appErr.Code != tc.code {
 			t.Fatalf("error=%v want=%s", err, tc.code)
 		}
+	}
+}
+
+func TestResendVerificationPassesPolicyAndMapsLimit(t *testing.T) {
+	policy := domain.ResendPolicy{Cooldown: time.Minute, MaxPerWindow: 5}
+	store := &verificationStore{err: &domain.ResendLimitError{Wait: 42 * time.Second}}
+
+	err := application.NewResendEmailVerificationService(store, application.ResendVerificationConfig{TTL: time.Hour, Policy: policy}).
+		Resend(context.Background(), uuid.New())
+
+	if store.policy != policy {
+		t.Fatalf("store got policy %+v, want %+v", store.policy, policy)
+	}
+	var appErr *apperror.Error
+	if !errors.As(err, &appErr) || appErr.Kind != apperror.KindTooManyRequests || appErr.Code != "email_verification_resend_limited" {
+		t.Fatalf("error = %v, want too_many_requests/email_verification_resend_limited", err)
+	}
+	var limited *domain.ResendLimitError
+	if !errors.As(err, &limited) || limited.RetryAfter() != 42*time.Second {
+		t.Fatalf("retry delay not preserved through the application error: %v", err)
 	}
 }
 

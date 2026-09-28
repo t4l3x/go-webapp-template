@@ -8,6 +8,7 @@ import (
 	"net/netip"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -45,7 +46,7 @@ func newTestHandlerWithSessions(t *testing.T) (*identityhttp.Handler, *fakeUserR
 			PasswordMinLength:    12,
 			EmailVerificationTTL: 24 * time.Hour,
 		}),
-		application.NewLoginService(users, sessions, fakeHasher{}, tokens, application.SessionConfig{RefreshTokenTTL: time.Hour}),
+		mustLogin(application.NewLoginService(users, sessions, fakeHasher{}, tokens, allowAllRisk{}, discardEvents{}, application.SessionConfig{RefreshTokenTTL: time.Hour})),
 		application.NewRefreshService(sessions, users, tokens, application.SessionConfig{RefreshTokenTTL: time.Hour}),
 		application.NewLogoutService(sessions),
 		application.NewGetMeService(users),
@@ -585,6 +586,40 @@ func (r *fakeSessionRepository) Revoke(_ context.Context, sessionID uuid.UUID) e
 	session.UpdatedAt = now
 
 	return nil
+}
+
+// mustLogin unwraps NewLoginService, whose only error is a failed
+// dummy-hash precompute (impossible with the fake hashers here).
+func mustLogin(svc *application.LoginService, err error) *application.LoginService {
+	if err != nil {
+		panic(err)
+	}
+	return svc
+}
+
+// allowAllRisk / discardEvents stand in for login abuse protection in
+// tests that aren't about it.
+type allowAllRisk struct{}
+
+func (allowAllRisk) Evaluate(context.Context, application.LoginAttempt) (application.RiskDecision, error) {
+	return application.RiskDecision{Action: application.RiskAllow}, nil
+}
+func (allowAllRisk) Succeeded(context.Context, application.LoginAttempt) {}
+
+type discardEvents struct{}
+
+func (discardEvents) Publish(context.Context, application.SecurityEvent) {}
+
+// countingHasher records how often password verification (Argon2 in
+// production) actually ran.
+type countingHasher struct {
+	fakeHasher
+	verifies atomic.Int64
+}
+
+func (h *countingHasher) Verify(password, encodedHash string) (bool, error) {
+	h.verifies.Add(1)
+	return h.fakeHasher.Verify(password, encodedHash)
 }
 
 type fakeHasher struct{}

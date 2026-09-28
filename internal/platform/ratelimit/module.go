@@ -3,7 +3,10 @@ package ratelimit
 import (
 	"log/slog"
 
+	"go.opentelemetry.io/otel/metric"
 	"go.uber.org/fx"
+
+	"github.com/t4l3x/go-webapp-template/internal/platform/observability"
 )
 
 // Module wires the rate limiter. Include it in a process that serves
@@ -22,8 +25,13 @@ var Module = fx.Module(
 
 		NewRedisLimiter,
 
-		func(limiter *RedisLimiter, logger *slog.Logger) Limiter {
-			return NewFailOpenLimiter(limiter, logger)
+		func(limiter *RedisLimiter, provider metric.MeterProvider, logger *slog.Logger) (Limiter, error) {
+			signal, err := observability.NewProtectionSignal(provider, logger.With("component", "ratelimit"), ProtectionEvent)
+			if err != nil {
+				return nil, err
+			}
+
+			return NewFailOpenLimiter(limiter, signal), nil
 		},
 	),
 )

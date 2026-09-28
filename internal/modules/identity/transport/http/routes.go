@@ -21,8 +21,6 @@ func NewRoutes(
 		return middleware.Chain(h, authMiddleware.Authenticate)
 	}
 
-	// Verification reuses the credential-check allowance; resend reuses the
-	// stricter registration allowance. Each has its own per-IP bucket.
 	rateLimited := func(scope string, policy ratelimit.Policy, h http.HandlerFunc) http.Handler {
 		return middleware.Chain(h, rateLimiter.PerIP(scope, policy))
 	}
@@ -35,9 +33,9 @@ func NewRoutes(
 		httpserver.POST("/auth/refresh", rateLimited(scopeRefresh, policies.Refresh, handler.Refresh)),
 		httpserver.POST("/auth/logout", authenticated(handler.Logout)),
 		httpserver.GET("/auth/me", authenticated(handler.GetMe)),
-		httpserver.POST("/auth/verify-email", rateLimited(scopeVerifyEmail, policies.LoginIP, handler.VerifyEmail)),
+		httpserver.POST("/auth/verify-email", rateLimited(scopeVerifyEmail, policies.VerifyEmail, handler.VerifyEmail)),
 		httpserver.POST("/auth/resend-verification", middleware.Chain(
-			rateLimited(scopeResendVerification, policies.Register, handler.ResendVerification), authMiddleware.Authenticate),
+			rateLimited(scopeResendVerification, policies.ResendVerification, handler.ResendVerification), authMiddleware.Authenticate),
 		),
 	)
 }

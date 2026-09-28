@@ -10,8 +10,17 @@ exporters:
     tls:
       insecure: true
 
+  # Local dev only: prints received metrics to the collector's log
+  # (`docker logs go-webapp-template-otel-collector`). Production points
+  # OTEL_EXPORTER_OTLP_ENDPOINT at its own collector/backend instead.
+  debug:
+    verbosity: basic
+
 service:
   pipelines:
     traces:
       receivers: [otlp]
       exporters: [otlp/jaeger]
+    metrics:
+      receivers: [otlp]
+      exporters: [debug]

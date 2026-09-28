@@ -2,12 +2,10 @@ package http
 
 import (
 	"net/http"
-	"strings"
 
 	"github.com/t4l3x/go-webapp-template/internal/api/openapi"
 	"github.com/t4l3x/go-webapp-template/internal/modules/identity/application"
 	"github.com/t4l3x/go-webapp-template/internal/platform/httpserver/request"
-	"github.com/t4l3x/go-webapp-template/internal/platform/httpserver/requestctx"
 	"github.com/t4l3x/go-webapp-template/internal/platform/httpserver/response"
 )
 
@@ -160,27 +158,4 @@ func (h *Handler) ResendVerification(w http.ResponseWriter, r *http.Request) {
 	}
 
 	h.responder.Status(w, r, http.StatusAccepted)
-}
-
-// clientIP is the caller's address as resolved once by the platform
-// ClientIP middleware, or nil if it could not be determined. The
-// application input keeps *string rather than netip.Addr.
-func clientIP(r *http.Request) *string {
-	addr := requestctx.ClientIP(r.Context())
-	if !addr.IsValid() {
-		return nil
-	}
-
-	ip := addr.String()
-
-	return &ip
-}
-
-func userAgent(r *http.Request) *string {
-	agent := strings.TrimSpace(r.UserAgent())
-	if agent == "" {
-		return nil
-	}
-
-	return &agent
 }

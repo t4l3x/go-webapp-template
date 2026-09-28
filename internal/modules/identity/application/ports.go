@@ -86,8 +86,35 @@ type VerificationTokenVerifier interface {
 	VerifyVerificationToken(string) (uuid.UUID, time.Time, error)
 }
 
+// LoginFailureCounter keeps short-lived account+IP login attempt counts
+// for AccountIPFailureRule. Implementations must not store the raw email
+// (key it by a keyed hash), and fail open: when the backend is
+// unavailable Reserve reports a zero count and the failure is logged,
+// the same policy as the HTTP rate limiters.
+type LoginFailureCounter interface {
+	// Reserve atomically counts one attempt and returns the count in the
+	// current fixed window (including this one) and the time left in it.
+	// The window starts at the first attempt and is not extended by later
+	// ones.
+	Reserve(ctx context.Context, email string, ip *string, window time.Duration) (count int, remaining time.Duration)
+
+	// Reset clears the count after a successful login.
+	Reset(ctx context.Context, email string, ip *string)
+}
+
+// SecurityEvents receives security-relevant outcomes so alerting, audit
+// logging and metrics subscribe here instead of living in use cases.
+// Publish must not block the request meaningfully and cannot fail it.
+type SecurityEvents interface {
+	Publish(ctx context.Context, event SecurityEvent)
+}
+
 // VerificationStore serializes consumption and replacement by locking the user.
+//
+// Replace applies policy under that same lock, against the account's
+// already-issued credentials, and returns *domain.ResendLimitError when
+// it refuses — so concurrent resends for one account cannot all pass.
 type VerificationStore interface {
 	Consume(context.Context, uuid.UUID, time.Time) error
-	Replace(context.Context, *domain.EmailVerification) error
+	Replace(context.Context, *domain.EmailVerification, domain.ResendPolicy) error
 }

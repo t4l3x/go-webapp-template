@@ -16,7 +16,19 @@ var identityEnvKeys = []string{
 	"AUTH_REFRESH_TOKEN_TTL",
 	"AUTH_EMAIL_VERIFICATION_TTL",
 	"AUTH_EMAIL_VERIFICATION_SECRET",
+	"AUTH_RATE_LIMIT_REGISTER_PER_MINUTE",
+	"AUTH_RATE_LIMIT_LOGIN_IP_PER_MINUTE",
+	"AUTH_RATE_LIMIT_REFRESH_PER_MINUTE",
+	"AUTH_RATE_LIMIT_VERIFY_EMAIL_PER_MINUTE",
+	"AUTH_RATE_LIMIT_RESEND_VERIFICATION_PER_MINUTE",
+	"AUTH_EMAIL_VERIFICATION_RESEND_COOLDOWN",
+	"AUTH_EMAIL_VERIFICATION_RESEND_MAX_PER_DAY",
+	"AUTH_ABUSE_KEY_SECRET",
+	"AUTH_LOGIN_FAILURE_MAX",
+	"AUTH_LOGIN_FAILURE_WINDOW",
 }
+
+const validAbuseKeySecret = "test-abuse-key-secret-that-is-32-bytes-plus"
 
 // validJWTSecret/validEmailVerificationSecret satisfy the minimum-length
 // requirement so tests that aren't specifically about secret strength
@@ -35,6 +47,39 @@ func setValidSecrets(t *testing.T) {
 
 	t.Setenv("AUTH_JWT_SECRET", validJWTSecret)
 	t.Setenv("AUTH_JWT_ISSUER", "go-webapp-template")
+	t.Setenv("AUTH_ABUSE_KEY_SECRET", validAbuseKeySecret)
+}
+
+func TestLoadConfig_LoginAbuseSettings(t *testing.T) {
+	testkit.UnsetEnv(t, identityEnvKeys...)
+	setValidSecrets(t)
+
+	cfg, err := identity.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	if cfg.LoginFailureMax != 5 || cfg.LoginFailureWindow != 15*time.Minute {
+		t.Fatalf("login failure policy = %d / %s, want 5 / 15m", cfg.LoginFailureMax, cfg.LoginFailureWindow)
+	}
+
+	for name, env := range map[string]map[string]string{
+		"missing abuse secret":      {"AUTH_ABUSE_KEY_SECRET": ""},
+		"weak abuse secret":         {"AUTH_ABUSE_KEY_SECRET": "too-short"},
+		"abuse secret equal to JWT": {"AUTH_ABUSE_KEY_SECRET": validJWTSecret},
+		"zero max failures":         {"AUTH_LOGIN_FAILURE_MAX": "0"},
+		"zero window":               {"AUTH_LOGIN_FAILURE_WINDOW": "0s"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			testkit.UnsetEnv(t, identityEnvKeys...)
+			setValidSecrets(t)
+			for k, v := range env {
+				t.Setenv(k, v)
+			}
+			if _, err := identity.LoadConfig(); err == nil {
+				t.Fatalf("LoadConfig() error = nil, want error for %v", env)
+			}
+		})
+	}
 }
 
 func TestLoadConfig_RequiresJWTSecret(t *testing.T) {
@@ -130,6 +175,51 @@ func TestLoadConfig_Defaults(t *testing.T) {
 	if cfg.EmailVerificationTTL != 24*time.Hour {
 		t.Fatalf("EmailVerificationTTL = %v, want %v", cfg.EmailVerificationTTL, 24*time.Hour)
 	}
+
+	for name, got := range map[string][2]int{
+		"RateLimitRegisterPerMinute":           {cfg.RateLimitRegisterPerMinute, 5},
+		"RateLimitLoginIPPerMinute":            {cfg.RateLimitLoginIPPerMinute, 15},
+		"RateLimitRefreshPerMinute":            {cfg.RateLimitRefreshPerMinute, 30},
+		"RateLimitVerifyEmailPerMinute":        {cfg.RateLimitVerifyEmailPerMinute, 10},
+		"RateLimitResendVerificationPerMinute": {cfg.RateLimitResendVerificationPerMinute, 5},
+		"EmailVerificationResendMaxPerWindow":  {cfg.EmailVerificationResendMaxPerWindow, 5},
+	} {
+		if got[0] != got[1] {
+			t.Fatalf("%s = %d, want %d", name, got[0], got[1])
+		}
+	}
+	if cfg.EmailVerificationResendCooldown != time.Minute {
+		t.Fatalf("EmailVerificationResendCooldown = %v, want %v", cfg.EmailVerificationResendCooldown, time.Minute)
+	}
+}
+
+func TestLoadConfig_InvalidRateLimitsAndResendPolicyRejected(t *testing.T) {
+	for variable, value := range map[string]string{
+		"AUTH_RATE_LIMIT_VERIFY_EMAIL_PER_MINUTE":        "0",
+		"AUTH_RATE_LIMIT_RESEND_VERIFICATION_PER_MINUTE": "0",
+		"AUTH_EMAIL_VERIFICATION_RESEND_COOLDOWN":        "0s",
+		"AUTH_EMAIL_VERIFICATION_RESEND_MAX_PER_DAY":     "1", // includes registration: 1 means no resend ever
+	} {
+		t.Run(variable, func(t *testing.T) {
+			testkit.UnsetEnv(t, identityEnvKeys...)
+			setValidSecrets(t)
+			t.Setenv(variable, value)
+
+			if _, err := identity.LoadConfig(); err == nil {
+				t.Fatalf("LoadConfig() error = nil, want error for %s=%s", variable, value)
+			}
+		})
+	}
+
+	t.Run("cooldown not shorter than the cap window", func(t *testing.T) {
+		testkit.UnsetEnv(t, identityEnvKeys...)
+		setValidSecrets(t)
+		t.Setenv("AUTH_EMAIL_VERIFICATION_RESEND_COOLDOWN", "24h")
+
+		if _, err := identity.LoadConfig(); err == nil {
+			t.Fatalf("LoadConfig() error = nil, want error for a cooldown of 24h")
+		}
+	})
 }
 
 func TestLoadConfig_PasswordMinLengthBelowFloorRejected(t *testing.T) {

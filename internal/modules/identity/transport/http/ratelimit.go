@@ -35,10 +35,17 @@ const (
 // victim's address throttle that victim's own login attempts. If that
 // protection is designed again, it needs to not be a hard block on an
 // unauthenticated request.
+//
+// These are the per-IP layer only. Rules keyed by account (the resend
+// cooldown and daily cap) live in the application, under the account's
+// row lock, where a changed IP or a burst of concurrent requests can't
+// get around them.
 type RateLimitPolicies struct {
-	Register ratelimit.Policy
-	LoginIP  ratelimit.Policy
-	Refresh  ratelimit.Policy
+	Register           ratelimit.Policy
+	LoginIP            ratelimit.Policy
+	Refresh            ratelimit.Policy
+	VerifyEmail        ratelimit.Policy
+	ResendVerification ratelimit.Policy
 }
 
 // RateLimiter applies identity's policies to identity's endpoints.

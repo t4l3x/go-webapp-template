@@ -114,7 +114,13 @@ func (s *VerificationStore) Consume(ctx context.Context, id uuid.UUID, expiresAt
 // Replace snapshots the recipient under the same lock as credential replacement.
 // A verified account needs no new delivery; every other successful write includes
 // its outbox event in this transaction.
-func (s *VerificationStore) Replace(ctx context.Context, verification *domain.EmailVerification) error {
+//
+// policy is checked while the user row is locked, against every credential
+// issued in the last domain.ResendWindow (registration included; replaced
+// rows are consumed, never deleted, so they still count). Concurrent resends
+// for one account therefore serialize on the lock, and each sees the rows
+// the previous one inserted.
+func (s *VerificationStore) Replace(ctx context.Context, verification *domain.EmailVerification, policy domain.ResendPolicy) error {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return fmt.Errorf("begin verification replacement: %w", err)
@@ -141,6 +147,13 @@ func (s *VerificationStore) Replace(ctx context.Context, verification *domain.Em
 	if verifiedAt != nil {
 		return nil
 	}
+	issued, err := issuedSince(ctx, tx, verification.UserID, verification.CreatedAt.Add(-domain.ResendWindow))
+	if err != nil {
+		return err
+	}
+	if err := policy.Check(issued, verification.CreatedAt); err != nil {
+		return err
+	}
 	const invalidatePrevious = `
 		UPDATE email_verifications
 		SET consumed_at = clock_timestamp()
@@ -163,6 +176,29 @@ func (s *VerificationStore) Replace(ctx context.Context, verification *domain.Em
 		return fmt.Errorf("commit verification replacement: %w", err)
 	}
 	return nil
+}
+
+// issuedSince returns the creation times of the user's credentials created
+// after since, newest first. created_at is written from the application
+// clock (domain.NewEmailVerification), so it is compared against that same
+// clock rather than the database's.
+func issuedSince(ctx context.Context, tx pgx.Tx, userID uuid.UUID, since time.Time) ([]time.Time, error) {
+	const query = `
+		SELECT created_at
+		FROM email_verifications
+		WHERE user_id = $1
+			AND created_at > $2
+		ORDER BY created_at DESC
+	`
+	rows, err := tx.Query(ctx, query, userID, since)
+	if err != nil {
+		return nil, fmt.Errorf("query issued verifications: %w", err)
+	}
+	issued, err := pgx.CollectRows(rows, pgx.RowTo[time.Time])
+	if err != nil {
+		return nil, fmt.Errorf("scan issued verifications: %w", err)
+	}
+	return issued, nil
 }
 
 // insertVerificationDelivery is shared by registration and resend. The caller

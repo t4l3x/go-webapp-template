@@ -3,9 +3,12 @@ package http_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -15,6 +18,7 @@ import (
 	"github.com/t4l3x/go-webapp-template/internal/modules/identity/domain"
 	"github.com/t4l3x/go-webapp-template/internal/modules/identity/infrastructure/security"
 	identityhttp "github.com/t4l3x/go-webapp-template/internal/modules/identity/transport/http"
+	"github.com/t4l3x/go-webapp-template/internal/platform/httpserver/requestctx"
 	"github.com/t4l3x/go-webapp-template/internal/platform/httpserver/response"
 )
 
@@ -28,10 +32,117 @@ func (s *httpVerificationStore) Consume(context.Context, uuid.UUID, time.Time) e
 	s.calls++
 	return s.err
 }
-func (s *httpVerificationStore) Replace(_ context.Context, v *domain.EmailVerification) error {
+func (s *httpVerificationStore) Replace(_ context.Context, v *domain.EmailVerification, _ domain.ResendPolicy) error {
 	s.calls++
 	s.userID = v.UserID
 	return s.err
+}
+
+// policyVerificationStore applies the real domain.ResendPolicy to an
+// in-memory per-user history, with a mutex standing in for the row lock
+// the Postgres store takes (whose concurrency is covered by the
+// integration suite).
+type policyVerificationStore struct {
+	mu     sync.Mutex
+	issued map[uuid.UUID][]time.Time // newest first
+}
+
+func (s *policyVerificationStore) Consume(context.Context, uuid.UUID, time.Time) error { return nil }
+
+func (s *policyVerificationStore) Replace(_ context.Context, v *domain.EmailVerification, policy domain.ResendPolicy) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if err := policy.Check(s.issued[v.UserID], v.CreatedAt); err != nil {
+		return err
+	}
+	s.issued[v.UserID] = append([]time.Time{v.CreatedAt}, s.issued[v.UserID]...)
+	return nil
+}
+
+// newResendEndpoint is the resend handler behind real AuthMiddleware,
+// authenticating every request as userID.
+func newResendEndpoint(t *testing.T, userID uuid.UUID) http.Handler {
+	t.Helper()
+
+	store := &policyVerificationStore{issued: map[uuid.UUID][]time.Time{}}
+	resend := application.NewResendEmailVerificationService(store, application.ResendVerificationConfig{
+		TTL:    time.Hour,
+		Policy: domain.ResendPolicy{Cooldown: time.Minute, MaxPerWindow: 5},
+	})
+	responder := mustResponder(t)
+	h := newVerificationHandler(t, nil, resend, responder)
+
+	tokens := newFakeTokenManager()
+	tokens.claims = application.AccessTokenClaims{UserID: userID, SessionID: uuid.New()}
+
+	return identityhttp.NewAuthMiddleware(tokens, responder).Authenticate(http.HandlerFunc(h.ResendVerification))
+}
+
+func resendFrom(ip string) *http.Request {
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/resend-verification", nil)
+	req.Header.Set("Authorization", "Bearer anything")
+	return req.WithContext(requestctx.WithClientIP(req.Context(), netip.MustParseAddr(ip)))
+}
+
+// TestHandler_ResendVerification_CooldownSurvivesIPChange: the cooldown is
+// keyed by account, so switching address right after a send is refused.
+func TestHandler_ResendVerification_CooldownSurvivesIPChange(t *testing.T) {
+	endpoint := newResendEndpoint(t, uuid.New())
+
+	first := httptest.NewRecorder()
+	endpoint.ServeHTTP(first, resendFrom("198.51.100.7"))
+	if first.Code != http.StatusAccepted {
+		t.Fatalf("first resend: status = %d, want %d, body = %s", first.Code, http.StatusAccepted, first.Body)
+	}
+
+	second := httptest.NewRecorder()
+	endpoint.ServeHTTP(second, resendFrom("203.0.113.9"))
+	if second.Code != http.StatusTooManyRequests {
+		t.Fatalf("resend from a new IP inside the cooldown: status = %d, want %d", second.Code, http.StatusTooManyRequests)
+	}
+	if code := decodeErrorCode(t, second.Body.Bytes()); code != "email_verification_resend_limited" {
+		t.Fatalf("error.code = %q, want %q", code, "email_verification_resend_limited")
+	}
+	if got := second.Header().Get("Retry-After"); got != "60" {
+		t.Fatalf("Retry-After = %q, want %q", got, "60")
+	}
+}
+
+// TestHandler_ResendVerification_ConcurrentAttemptsCannotBypassCooldown:
+// of many simultaneous resends for one account, exactly one is accepted.
+func TestHandler_ResendVerification_ConcurrentAttemptsCannotBypassCooldown(t *testing.T) {
+	endpoint := newResendEndpoint(t, uuid.New())
+
+	const attempts = 20
+	start := make(chan struct{})
+	codes := make(chan int, attempts)
+	var wg sync.WaitGroup
+	for i := range attempts {
+		wg.Go(func() {
+			<-start
+			rec := httptest.NewRecorder()
+			endpoint.ServeHTTP(rec, resendFrom(fmt.Sprintf("198.51.100.%d", i+1)))
+			codes <- rec.Code
+		})
+	}
+	close(start)
+	wg.Wait()
+	close(codes)
+
+	accepted := 0
+	for code := range codes {
+		switch code {
+		case http.StatusAccepted:
+			accepted++
+		case http.StatusTooManyRequests:
+		default:
+			t.Fatalf("unexpected status %d", code)
+		}
+	}
+	if accepted != 1 {
+		t.Fatalf("accepted = %d concurrent resends, want exactly 1", accepted)
+	}
 }
 
 // newVerificationHandler builds a Handler wired only with the

@@ -22,8 +22,9 @@ package ratelimit
 
 import (
 	"context"
-	"log/slog"
 	"time"
+
+	"github.com/t4l3x/go-webapp-template/internal/platform/observability"
 )
 
 // Result is the outcome of one limiter check.
@@ -69,33 +70,34 @@ type Limiter interface {
 // that opens while Redis is down. Anything that must hold even with
 // Redis unavailable belongs in an authorization check, not here.
 //
-// It is not silent: every failure is logged with the scope and the
-// error. Never the subject — that is an IP or an account hash, and it
-// would put per-user identifiers into log aggregation at request rate.
+// It is not silent: every failure increments the
+// rate_limit_protection_unavailable counter, and the outage is logged on
+// transition, as a periodic summary, and on recovery (see
+// observability.ProtectionSignal) — never once per request, which during
+// an attack would be a log storm. Logs carry the scope, never the subject.
 type failOpenLimiter struct {
 	inner  Limiter
-	logger *slog.Logger
+	signal *observability.ProtectionSignal
 }
 
+// ProtectionEvent names the counter and log event for limiter outages.
+const ProtectionEvent = "rate_limit_protection_unavailable"
+
 // NewFailOpenLimiter wraps a limiter so backend failures allow the
-// request instead of rejecting it.
-func NewFailOpenLimiter(inner Limiter, logger *slog.Logger) Limiter {
-	return &failOpenLimiter{
-		inner:  inner,
-		logger: logger.With("component", "ratelimit"),
-	}
+// request instead of rejecting it, reported through signal.
+func NewFailOpenLimiter(inner Limiter, signal *observability.ProtectionSignal) Limiter {
+	return &failOpenLimiter{inner: inner, signal: signal}
 }
 
 func (l *failOpenLimiter) Allow(ctx context.Context, key Key, policy Policy) (Result, error) {
 	result, err := l.inner.Allow(ctx, key, policy)
 	if err != nil {
-		l.logger.Warn("rate limiter backend unavailable, allowing request",
-			"scope", key.Scope(),
-			"error", err,
-		)
+		l.signal.Failed(ctx, key.Scope(), err)
 
 		return Result{Allowed: true}, nil
 	}
+
+	l.signal.Succeeded()
 
 	return result, nil
 }

@@ -16,6 +16,9 @@ services:
       APP_SERVICE: api
       DB_DSN: postgres://postgres:postgres@postgres:5432/go_webapp_template?sslmode=disable
       REDIS_URL: redis://redis:6379/0
+      # Metrics go to the stack's collector (OTLP/HTTP, read by the SDK).
+      OTEL_METRICS_ENABLED: "true"
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
     depends_on:
       postgres:
         condition: service_healthy
@@ -44,10 +47,14 @@ services:
       DB_DSN: postgres://postgres:postgres@postgres:5432/go_webapp_template?sslmode=disable
       MAIL_HOST: mailpit
       MAIL_PORT: "1025"
+      OTEL_METRICS_ENABLED: "true"
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
     depends_on:
       postgres:
         condition: service_healthy
       mailpit:
+        condition: service_started
+      otel-collector:
         condition: service_started
 
   postgres:

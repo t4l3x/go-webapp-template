@@ -36,6 +36,17 @@ writes. SQL constraint failures roll the entire transaction back.
   invalidates older credentials, and queues a replacement atomically.
   It returns 202; already verified accounts return 202 without new mail.
   Disabled or missing accounts cannot request a delivery.
+- Resend has two limits. Per IP (`AUTH_RATE_LIMIT_RESEND_VERIFICATION_PER_MINUTE`,
+  `rate_limit_exceeded`) and per account: at least
+  `AUTH_EMAIL_VERIFICATION_RESEND_COOLDOWN` (60s) since the last email
+  and at most `AUTH_EMAIL_VERIFICATION_RESEND_MAX_PER_DAY` (5) per rolling
+  24h, both counting the registration email. The account rule is checked
+  under the user row lock against `email_verifications.created_at`
+  (replaced rows are consumed, never deleted, so they still count), so a
+  new IP or concurrent requests cannot get around it. A refusal returns
+  429 / `email_verification_resend_limited` with an exact `Retry-After`
+  and writes nothing — the previous link stays valid. The frontend can
+  show that wait directly.
 - Both mutations lock the user before changing credentials. Concurrent
   verification succeeds at most once. Concurrent resend and verification
   cannot leave a newly issued credential on an already verified account.

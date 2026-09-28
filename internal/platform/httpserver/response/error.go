@@ -4,10 +4,19 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"time"
 
 	"github.com/t4l3x/go-webapp-template/internal/apperror"
 	"github.com/t4l3x/go-webapp-template/internal/platform/httpserver/requestctx"
 )
+
+// retryAfterer is implemented by errors that know how long a throttled
+// caller must wait (e.g. identity's ThrottledError, ResendLimitError).
+// Matched structurally, so domain/application packages never import
+// HTTP code to get a Retry-After header.
+type retryAfterer interface {
+	RetryAfter() time.Duration
+}
 
 type Responder struct {
 	logger *slog.Logger
@@ -51,6 +60,13 @@ func (r *Responder) Error(
 	}
 
 	r.logError(req, err, appErr)
+
+	// A throttled outcome from any layer tells the client when to come
+	// back, as long as its error chain carries the delay.
+	var retry retryAfterer
+	if status == http.StatusTooManyRequests && errors.As(err, &retry) {
+		SetRetryAfter(w, retry.RetryAfter())
+	}
 
 	r.JSON(
 		w,

@@ -1,9 +1,7 @@
 package middleware
 
 import (
-	"math"
 	"net/http"
-	"strconv"
 	"time"
 
 	"github.com/t4l3x/go-webapp-template/internal/apperror"
@@ -91,25 +89,7 @@ func WriteRateLimited(
 	responder *response.Responder,
 	retryAfter time.Duration,
 ) {
-	w.Header().Set("Retry-After", retryAfterSeconds(retryAfter))
+	response.SetRetryAfter(w, retryAfter)
 
 	responder.Error(w, r, ErrRateLimited)
-}
-
-// retryAfterSeconds renders a duration as the integer seconds RFC 9110
-// requires.
-//
-// Rounded up, always. Rounding 1.2s down to 1 would invite the client
-// back before its allowance exists, so a well-behaved client retrying
-// exactly when told would be rejected again — and a client that trusts
-// the header would loop. A sub-second wait becomes 1 rather than 0 for
-// the same reason: 0 means "retry immediately", which is never true of
-// a request that was just refused.
-func retryAfterSeconds(retryAfter time.Duration) string {
-	seconds := int64(math.Ceil(retryAfter.Seconds()))
-	if seconds < 1 {
-		seconds = 1
-	}
-
-	return strconv.FormatInt(seconds, 10)
 }

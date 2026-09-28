@@ -11,6 +11,9 @@ import (
 	"github.com/getkin/kin-openapi/openapi3"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
+	goredis "github.com/redis/go-redis/v9"
+	"go.opentelemetry.io/otel/metric"
+	"go.opentelemetry.io/otel/metric/noop"
 	"go.uber.org/fx"
 
 	"github.com/t4l3x/go-webapp-template/internal/config"
@@ -289,6 +292,7 @@ func apiIdentityEnv(t *testing.T) {
 	t.Setenv("AUTH_EMAIL_VERIFICATION_SECRET", testEmailVerificationSecret)
 	t.Setenv("AUTH_JWT_SECRET", "test-jwt-secret-that-is-at-least-32-bytes-long")
 	t.Setenv("AUTH_JWT_ISSUER", "go-webapp-template")
+	t.Setenv("AUTH_ABUSE_KEY_SECRET", "test-abuse-key-secret-that-is-32-bytes-plus")
 }
 
 // workerIdentityEnv grants only the worker's identity secret: the
@@ -296,7 +300,7 @@ func apiIdentityEnv(t *testing.T) {
 func workerIdentityEnv(t *testing.T) {
 	t.Helper()
 
-	testkit.UnsetEnv(t, "AUTH_JWT_SECRET", "AUTH_JWT_ISSUER")
+	testkit.UnsetEnv(t, "AUTH_JWT_SECRET", "AUTH_JWT_ISSUER", "AUTH_ABUSE_KEY_SECRET")
 	t.Setenv("AUTH_EMAIL_VERIFICATION_SECRET", testEmailVerificationSecret)
 }
 
@@ -313,6 +317,10 @@ func stubDependencies() fx.Option {
 		func() config.App { return config.App{PublicURL: "https://app.example.com"} },
 		func() mail.Sender { return stubSender{} },
 		func() ratelimit.Limiter { return stubLimiter{} },
+		func() ratelimit.Config { return ratelimit.Config{Timeout: time.Second} },
+		func() metric.MeterProvider { return noop.NewMeterProvider() },
+		// Never dialed: go-redis connects lazily and no lifecycle runs.
+		func() *goredis.Client { return goredis.NewClient(&goredis.Options{Addr: "127.0.0.1:0"}) },
 		response.NewResponder,
 	)
 }

@@ -13,8 +13,13 @@ What's included:
 - **Distributed rate limiting** — Redis GCRA, fails open.
 - **Contract-first OpenAPI** — `docs/api/openapi.yaml` generates the
   transport types.
-- Localized emails, structured JSON logging, request IDs, panic recovery,
-  CORS, trusted-proxy client IP resolution.
+- **Login abuse protection** — per-IP limits, account+IP failure
+  throttling before password hashing, and timing-equalized password
+  checks with one generic error, so responses don't reveal whether an
+  account exists.
+- Localized emails, structured JSON logging, OpenTelemetry metrics
+  (OTLP), request IDs, panic recovery, CORS, trusted-proxy client IP
+  resolution.
 
 <!-- template:start -->
 ## Start a new project from this template

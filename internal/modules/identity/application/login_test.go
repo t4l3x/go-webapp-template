@@ -21,16 +21,39 @@ func newLoginFixture() loginFixture {
 	users := newFakeUserRepository()
 	sessions := newFakeSessionRepository()
 
-	login := application.NewLoginService(
+	login := mustLogin(application.NewLoginService(
 		users,
 		sessions,
 		fakeHasher{},
 		newFakeTokenManager(15*time.Minute),
+		allowAllRisk{},
+		discardEvents{},
 		application.SessionConfig{RefreshTokenTTL: 720 * time.Hour},
-	)
+	))
 
 	return loginFixture{login: login, users: users, sessions: sessions}
 }
+
+// mustLogin unwraps NewLoginService, whose only error is a failed
+// dummy-hash precompute (impossible with fakeHasher).
+func mustLogin(svc *application.LoginService, err error) *application.LoginService {
+	if err != nil {
+		panic(err)
+	}
+	return svc
+}
+
+// allowAllRisk is a LoginRiskEvaluator for tests that aren't about risk.
+type allowAllRisk struct{}
+
+func (allowAllRisk) Evaluate(context.Context, application.LoginAttempt) (application.RiskDecision, error) {
+	return application.RiskDecision{Action: application.RiskAllow}, nil
+}
+func (allowAllRisk) Succeeded(context.Context, application.LoginAttempt) {}
+
+type discardEvents struct{}
+
+func (discardEvents) Publish(context.Context, application.SecurityEvent) {}
 
 func mustRegisterUser(t *testing.T, users *fakeUserRepository, email, password string) *domain.User {
 	t.Helper()
@@ -175,7 +198,7 @@ func TestLoginService_Login_AccessTokenFailureLeavesNoOrphanedSession(t *testing
 	tokens := newFakeTokenManager(15 * time.Minute)
 	tokens.generateAccessTokenErr = errBoom
 
-	login := application.NewLoginService(users, sessions, fakeHasher{}, tokens, application.SessionConfig{RefreshTokenTTL: time.Hour})
+	login := mustLogin(application.NewLoginService(users, sessions, fakeHasher{}, tokens, allowAllRisk{}, discardEvents{}, application.SessionConfig{RefreshTokenTTL: time.Hour}))
 	mustRegisterUser(t, users, "user@example.com", "supersecretpassword")
 
 	if _, err := login.Login(context.Background(), application.LoginInput{
@@ -196,7 +219,7 @@ func TestLoginService_Login_RefreshTokenFailureLeavesNoOrphanedSession(t *testin
 	tokens := newFakeTokenManager(15 * time.Minute)
 	tokens.generateRefreshTokenErr = errBoom
 
-	login := application.NewLoginService(users, sessions, fakeHasher{}, tokens, application.SessionConfig{RefreshTokenTTL: time.Hour})
+	login := mustLogin(application.NewLoginService(users, sessions, fakeHasher{}, tokens, allowAllRisk{}, discardEvents{}, application.SessionConfig{RefreshTokenTTL: time.Hour}))
 	mustRegisterUser(t, users, "user@example.com", "supersecretpassword")
 
 	if _, err := login.Login(context.Background(), application.LoginInput{

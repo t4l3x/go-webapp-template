@@ -42,7 +42,7 @@ const (
 func baseConfigEnv(t *testing.T) {
 	t.Helper()
 
-	testkit.UnsetEnv(t, "AUTH_JWT_SECRET", "AUTH_JWT_ISSUER", "AUTH_EMAIL_VERIFICATION_SECRET")
+	testkit.UnsetEnv(t, "AUTH_JWT_SECRET", "AUTH_JWT_ISSUER", "AUTH_EMAIL_VERIFICATION_SECRET", "AUTH_ABUSE_KEY_SECRET")
 	t.Setenv("DB_DSN", "postgres://postgres:postgres@localhost:5432/postgres?sslmode=disable")
 }
 
@@ -51,6 +51,7 @@ func apiSecretsEnv(t *testing.T) {
 
 	t.Setenv("AUTH_JWT_SECRET", testJWTSecret)
 	t.Setenv("AUTH_JWT_ISSUER", "go-webapp-template")
+	t.Setenv("AUTH_ABUSE_KEY_SECRET", "test-abuse-key-secret-that-is-32-bytes-plus")
 }
 
 func workerSecretsEnv(t *testing.T) {

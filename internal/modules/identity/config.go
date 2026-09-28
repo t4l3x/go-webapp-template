@@ -6,6 +6,7 @@ import (
 
 	"github.com/caarlos0/env/v11"
 
+	"github.com/t4l3x/go-webapp-template/internal/modules/identity/domain"
 	"github.com/t4l3x/go-webapp-template/internal/platform/ratelimit"
 )
 
@@ -28,6 +29,18 @@ type Config struct {
 
 	JWTSecret string `env:"AUTH_JWT_SECRET,required,notEmpty"`
 	JWTIssuer string `env:"AUTH_JWT_ISSUER,required,notEmpty"`
+
+	// AbuseKeySecret keys the HMAC that turns an email address into an
+	// abuse-counter subject, so Redis never holds a raw address. API only;
+	// must differ from the signing secrets.
+	AbuseKeySecret string `env:"AUTH_ABUSE_KEY_SECRET,required,notEmpty"`
+
+	// Failed logins per account per client IP within a fixed window before
+	// that IP is refused for that account until the window ends. Other
+	// IPs, including the account owner's, are unaffected — this is
+	// throttling, never an account lockout.
+	LoginFailureMax    int           `env:"AUTH_LOGIN_FAILURE_MAX" envDefault:"5"`
+	LoginFailureWindow time.Duration `env:"AUTH_LOGIN_FAILURE_WINDOW" envDefault:"15m"`
 
 	AccessTokenTTL  time.Duration `env:"AUTH_ACCESS_TOKEN_TTL" envDefault:"15m"`
 	RefreshTokenTTL time.Duration `env:"AUTH_REFRESH_TOKEN_TTL" envDefault:"720h"`
@@ -62,6 +75,20 @@ type Config struct {
 	// Refresh is called by legitimate clients on a schedule (roughly
 	// once per access-token lifetime), so its limit is looser.
 	RateLimitRefreshPerMinute int `env:"AUTH_RATE_LIMIT_REFRESH_PER_MINUTE" envDefault:"30"`
+
+	// Verify-email checks a signed token; a few retries (double clicks,
+	// mail-scanner prefetches) are normal, guessing is not.
+	RateLimitVerifyEmailPerMinute int `env:"AUTH_RATE_LIMIT_VERIFY_EMAIL_PER_MINUTE" envDefault:"10"`
+
+	// Resend-verification sends mail. This is only the per-IP layer; the
+	// per-account rule is EmailVerificationResend* below.
+	RateLimitResendVerificationPerMinute int `env:"AUTH_RATE_LIMIT_RESEND_VERIFICATION_PER_MINUTE" envDefault:"5"`
+
+	// Per-account resend rule, enforced in the application under the
+	// account's row lock, so changing IP (or racing requests) doesn't
+	// bypass it. Both count the email sent at registration.
+	EmailVerificationResendCooldown     time.Duration `env:"AUTH_EMAIL_VERIFICATION_RESEND_COOLDOWN" envDefault:"60s"`
+	EmailVerificationResendMaxPerWindow int           `env:"AUTH_EMAIL_VERIFICATION_RESEND_MAX_PER_DAY" envDefault:"5"`
 }
 
 func LoadConfig() (Config, error) {
@@ -76,6 +103,22 @@ func LoadConfig() (Config, error) {
 
 	if len(cfg.JWTSecret) < minSecretBytes {
 		return Config{}, fmt.Errorf("AUTH_JWT_SECRET must be at least %d bytes", minSecretBytes)
+	}
+
+	if len(cfg.AbuseKeySecret) < minSecretBytes {
+		return Config{}, fmt.Errorf("AUTH_ABUSE_KEY_SECRET must be at least %d bytes", minSecretBytes)
+	}
+
+	if cfg.AbuseKeySecret == cfg.JWTSecret {
+		return Config{}, fmt.Errorf("AUTH_ABUSE_KEY_SECRET and AUTH_JWT_SECRET must differ")
+	}
+
+	if cfg.LoginFailureMax < 1 {
+		return Config{}, fmt.Errorf("AUTH_LOGIN_FAILURE_MAX must be at least 1")
+	}
+
+	if cfg.LoginFailureWindow <= 0 {
+		return Config{}, fmt.Errorf("AUTH_LOGIN_FAILURE_WINDOW must be greater than zero")
 	}
 
 	if cfg.AccessTokenTTL <= 0 {
@@ -97,13 +140,26 @@ func LoadConfig() (Config, error) {
 	// Validated at startup rather than on the first request that hits a
 	// limit, so a bad value fails the process with the variable named.
 	for variable, perMinute := range map[string]int{
-		"AUTH_RATE_LIMIT_REGISTER_PER_MINUTE": cfg.RateLimitRegisterPerMinute,
-		"AUTH_RATE_LIMIT_LOGIN_IP_PER_MINUTE": cfg.RateLimitLoginIPPerMinute,
-		"AUTH_RATE_LIMIT_REFRESH_PER_MINUTE":  cfg.RateLimitRefreshPerMinute,
+		"AUTH_RATE_LIMIT_REGISTER_PER_MINUTE":            cfg.RateLimitRegisterPerMinute,
+		"AUTH_RATE_LIMIT_LOGIN_IP_PER_MINUTE":            cfg.RateLimitLoginIPPerMinute,
+		"AUTH_RATE_LIMIT_REFRESH_PER_MINUTE":             cfg.RateLimitRefreshPerMinute,
+		"AUTH_RATE_LIMIT_VERIFY_EMAIL_PER_MINUTE":        cfg.RateLimitVerifyEmailPerMinute,
+		"AUTH_RATE_LIMIT_RESEND_VERIFICATION_PER_MINUTE": cfg.RateLimitResendVerificationPerMinute,
 	} {
 		if err := ratelimit.PerMinute(perMinute).Validate(); err != nil {
 			return Config{}, fmt.Errorf("%s is not a usable rate limit: %w", variable, err)
 		}
+	}
+
+	// The cap counts the registration email, so below 2 no resend could
+	// ever succeed. A cooldown of a day or more would outlast the window
+	// the cap is counted in.
+	if cfg.EmailVerificationResendCooldown <= 0 || cfg.EmailVerificationResendCooldown >= domain.ResendWindow {
+		return Config{}, fmt.Errorf("AUTH_EMAIL_VERIFICATION_RESEND_COOLDOWN must be greater than zero and less than %s", domain.ResendWindow)
+	}
+
+	if cfg.EmailVerificationResendMaxPerWindow < 2 {
+		return Config{}, fmt.Errorf("AUTH_EMAIL_VERIFICATION_RESEND_MAX_PER_DAY must be at least 2 (it includes the registration email)")
 	}
 
 	return cfg, nil

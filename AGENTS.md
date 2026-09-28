@@ -144,34 +144,112 @@ Adding an endpoint? Follow
 
 ## Rate limiting
 
+- Defense in depth, each layer doing only its job:
+  CDN/WAF/API gateway (coarse DDoS/IP) → Go global per-IP limit
+  (generic) → module endpoint limits (identity's login/register/refresh/
+  verify/resend, per IP) → application/domain rules keyed by account
+  (e.g. identity's resend cooldown + daily cap). Per-IP limits are
+  bypassable by changing IP; anything that must hold per user belongs
+  in the last layer.
+- `ratelimit.Policy` is the reusable abstraction. A module keeps its
+  policies in a plain struct in its transport package (identity's
+  `RateLimitPolicies`); no cross-module `Policies`/provider/registry.
 - Distributed via Redis (`platform/redis`, go-redis). GCRA comes from
   `redis_rate` and runs as a Lua script — never read-modify-write in Go.
-- `redis_rate`/go-redis types stay inside `platform/ratelimit`'s adapter.
-  Modules use `Policy`/`Key`/`Result`/`Limiter`. Never call `redis_rate`
-  from a feature module.
+- `redis_rate` stays inside `platform/ratelimit`'s adapter; modules use
+  `Policy`/`Key`/`Result`/`Limiter` for HTTP limits. A module's own
+  Redis-backed abuse counter is a normal infrastructure adapter (go-redis
+  in `modules/<m>/infrastructure/redis`, like pgx in `postgres`) behind
+  an application port — not an extension of the HTTP limiter.
 - Platform owns mechanics + the generic per-IP limit; modules own their
   endpoints' limits (identity's `AUTH_RATE_LIMIT_*`). Don't add an env
   var per route.
 - Client IP comes from `requestctx.ClientIP` (resolved once by
   `middleware.ClientIP`). Never read forwarded headers in a limiter — a
   caller that picks its own IP picks its own bucket.
-- Keys are built by `ratelimit`, never by a handler. Only per-IP keys
-  exist today, and IPs stay plaintext. Don't add a keyed-hash mechanism
-  for other subjects until a limit actually needs one.
+- Keys are built by `ratelimit` (HTTP limits) or the adapter that owns
+  the counter, never by a handler. IPs stay plaintext; a personal
+  identifier (email) is only ever stored as HMAC-SHA256 under a dedicated
+  secret (`AUTH_ABUSE_KEY_SECRET`) — never raw.
 - `/health` and `/ready` are exempt — 429ing a liveness probe restarts
   healthy pods.
 - Order: RequestID → ClientIP → AccessLog → Recovery → CORS → RateLimit → router.
 - Denied: 429, `rate_limit_exceeded`, `Retry-After` in whole seconds
   rounded up. Only `Retry-After` — no `RateLimit-*` draft headers.
-- **Fails open**: Redis down → request proceeds, logged at Warn with the
-  scope. Never log the subject (IP / account hash).
-- Login is limited per IP only, consumed before credential verification.
-  No account-keyed hard block on an unauthenticated request — it lets
-  anyone who knows an address throttle that user's own logins.
-- Account lockout is a different thing and is deliberately not built.
-  Throttle, never a fixed penalty window (that's a DoS on other users).
+- **Fails open**: Redis down → request proceeds. Report through
+  `observability.ProtectionSignal`: an OTel counter per failure
+  (`rate_limit_protection_unavailable`, `auth_abuse_protection_unavailable`)
+  and logs only on transition / once-a-minute summary / recovery — never
+  a log line per request. Never log the subject (IP / account hash).
+- Metrics: OpenTelemetry via the `metric.MeterProvider` from
+  `platform/observability` (OTLP/HTTP when `OTEL_METRICS_ENABLED`, no-op
+  otherwise; endpoint from the standard `OTEL_EXPORTER_OTLP_*` vars). Low-
+  cardinality attributes only (a scope, never an IP/user).
+- Login: per-IP HTTP limit (before the handler) + failed-login limit per
+  account+IP (see "Authentication abuse"). Never a per-account hard
+  block on an unauthenticated request — it lets anyone who knows an
+  address lock that user out.
+- Account lockout is deliberately not built. Throttle; a penalty may only
+  ever apply to the offending source (account+IP), never account-wide.
 - Redis is ephemeral enforcement state. Never persist limiter state to
-  PostgreSQL; never hand-manage TTLs.
+  PostgreSQL. HTTP limits never hand-manage TTLs (redis_rate does);
+  abuse counters set their expiry atomically with the increment (Lua).
+- Account-keyed business limits on authenticated actions (resend
+  cooldown/cap) derive from durable records, checked under that
+  account's row lock in the write's transaction, with an exact
+  `Retry-After` — never a lockout.
+
+## Authentication abuse
+
+- Layers stay separate — never one universal limiter: HTTP per-IP limit
+  (`ratelimit`, 15 login req/min/IP) → application rules
+  (`LoginRiskEvaluator`: account+IP failures, 5 / 15 min) → future
+  account-wide progressive delay/challenge for distributed failures.
+- `LoginService` asks `LoginRiskEvaluator` before password hashing and
+  reports success; one rule today (`AccountIPFailureRule`). A second rule
+  becomes a composite evaluator in wiring, not branches in the service.
+  Add `RiskAction`s (Delay, Challenge, RequireMFA) only with the rule
+  that returns them.
+- Attempts reserve a counter slot atomically before Argon2 (concurrency
+  can't bypass the threshold); success resets it. Throttled login
+  returns the same `rate_limit_exceeded` 429 as the IP limit — never
+  reveal which limit, or whether the account exists.
+- Security outcomes go through `application.SecurityEvents`
+  (`identity.login.failed`, `identity.login.throttled`); alerting, audit
+  and metrics are consumers of that port, never code in the use case or
+  handler. Events carry user id / IP / internal reason — no email, no
+  password.
+- Future pieces map to: Middleware (request-level bot protection);
+  Ports & Adapters (CAPTCHA verifier, MFA, passkeys/WebAuthn,
+  breached-password checker, external risk intel); evaluator rules
+  (trusted devices, account-wide throttling, suspicious-login checks);
+  events (challenge_required, risk_high, mfa.failed).
+- Trusted devices (future): random, server-signed device token in an
+  HttpOnly, Secure, SameSite cookie; never User-Agent as identity; it
+  only reduces friction (skips throttles/challenges), never replaces a
+  credential.
+- Handlers stay decode → metadata → use case → render. No risk logic in
+  HTTP code.
+- Every login path that names an account (unknown, no password, wrong
+  password, disabled) reserves the bucket, costs one password
+  verification, and returns `invalid_credentials`; "disabled" only after
+  the right password. Never make a path cheaper or observably different.
+- Fail-open counts `auth_abuse_protection_unavailable` and logs at Error
+  on transition (then sampled) — alert on it; edge/WAF is the outer
+  defense while it fires.
+- The login dummy hash is precomputed in `NewLoginService` via the
+  configured hasher (current Argon2 params); requests only verify. Call
+  it timing equalization — never "constant time" (DB/cache paths still
+  differ slightly).
+- Authentication never depends on observability: recording a metric or
+  event can't block, do network I/O, or fail a login.
+- OTel attributes stay bounded (a scope); never IP/email/user ID/key.
+- Alert on protection state/outage duration, not raw counter volume.
+- The login-abuse layer is complete for the starter. Next change must
+  be a new capability (trusted devices + account-wide friction,
+  MFA/passkeys, challenges) — not new abstractions or IP-counter variants.
+- Keep `LoginRiskEvaluator`/`SecurityEvents` tiny: no registry, factory,
+  engine or context builder until real rules need one.
 
 ## Localization
 
