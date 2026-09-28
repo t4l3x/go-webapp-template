@@ -1,0 +1,109 @@
+services:
+  api:
+    container_name: go-webapp-template-api
+    build:
+      context: ..
+      dockerfile: docker/api/dev/Dockerfile
+    volumes:
+      - ..:/app
+    ports:
+      - "8080:8080"
+    env_file:
+      - ../.env
+    environment:
+      DB_DSN: postgres://postgres:postgres@postgres:5432/go_webapp_template?sslmode=disable
+      REDIS_URL: redis://redis:6379/0
+      OTEL_EXPORTER_OTLP_ENDPOINT: otel-collector:4317
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      otel-collector:
+        condition: service_started
+
+  # worker polls the outbox and delivers mail (e.g. registration's
+  # verification email) via Mailpit — see docs/guides/local_mail.md
+  # for the local dev flow. It's the same image as api, just running
+  # cmd/worker instead; no hot-reload since a background worker
+  # doesn't need it for typical local iteration.
+  worker:
+    container_name: go-webapp-template-worker
+    build:
+      context: ..
+      dockerfile: docker/api/dev/Dockerfile
+    command: ["go", "run", "./cmd/worker"]
+    volumes:
+      - ..:/app
+    env_file:
+      - ../.env
+    environment:
+      DB_DSN: postgres://postgres:postgres@postgres:5432/go_webapp_template?sslmode=disable
+      MAIL_HOST: mailpit
+      MAIL_PORT: "1025"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      mailpit:
+        condition: service_started
+
+  postgres:
+    container_name: go-webapp-template-postgres
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: go_webapp_template
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d go_webapp_template"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    container_name: go-webapp-template-redis
+    image: redis:8.2-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # Mailpit is a local SMTP server + web UI for viewing mail sent by
+  # the worker in development — nothing is actually delivered to a
+  # real inbox. See docs/guides/local_mail.md.
+  mailpit:
+    container_name: go-webapp-template-mailpit
+    image: axllent/mailpit:v1.31.1
+    ports:
+      - "1025:1025" # SMTP
+      - "8025:8025" # Web UI
+
+  otel-collector:
+    container_name: go-webapp-template-otel-collector
+    image: otel/opentelemetry-collector-contrib:0.103.0
+    command: ["--config=/etc/otelcol-contrib/config.yaml"]
+    volumes:
+      - ./otel/collector-config.yaml:/etc/otelcol-contrib/config.yaml:ro
+    ports:
+      - "4317:4317"
+      - "4318:4318"
+    depends_on:
+      - jaeger
+
+  jaeger:
+    container_name: go-webapp-template-jaeger
+    image: jaegertracing/all-in-one:1.58.1
+    environment:
+      COLLECTOR_OTLP_ENABLED: "true"
+    ports:
+      - "16686:16686"
+
+volumes:
+  postgres_data:

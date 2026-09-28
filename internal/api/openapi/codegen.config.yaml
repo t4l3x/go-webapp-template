@@ -1,0 +1,12 @@
+# Config for oapi-codegen, pinned in make/docs.mk. Regenerate with:
+#
+#   make openapi-generate
+#
+# This file is never edited by hand to change generated output beyond
+# what's expressed here — change docs/api/openapi.yaml instead.
+package: openapi
+output: internal/api/openapi/types.gen.go
+generate:
+  models: true
+output-options:
+  skip-prune: false

@@ -1,0 +1,28 @@
+# Identity's own message catalog. Wording lives with the module that
+# owns it — see docs/conventions/backend_conventions.md.
+#
+# Message IDs follow <module>.<feature>.<message> and are a contract:
+# they stay put when the English wording changes. Nested tables below
+# flatten to dotted IDs, so this file defines
+# "identity.email_verification.subject" and ".body".
+#
+# Template variables are supplied by the sending handler and must match
+# exactly: a reference to a variable the handler does not provide fails
+# the render rather than producing a blank email.
+#
+#   VerificationURL  the absolute, single-use verification link
+#   ExpiresAt        when that link stops working (UTC)
+
+[identity.email_verification]
+subject = "Verify your email address"
+body = """
+Welcome to Go Webapp Template.
+
+Click the link below to verify your email address:
+
+{{.VerificationURL}}
+
+This link expires on {{.ExpiresAt}}.
+
+If you did not create a Go Webapp Template account, you can ignore this email.
+"""

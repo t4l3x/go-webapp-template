@@ -1,0 +1,65 @@
+version: "2"
+
+run:
+  timeout: 3m
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
+  settings:
+    gofmt:
+      simplify: true
+    goimports:
+      local-prefixes:
+        - github.com/t4l3x/go-webapp-template
+  exclusions:
+    generated: strict
+    paths:
+      - internal/api/openapi/types.gen.go
+
+linters:
+  default: none
+  settings:
+    revive:
+      rules:
+        - name: exported
+          disabled: true
+        - name: package-comments
+          disabled: true
+        - name: unused-parameter
+          disabled: true
+        - name: context-as-argument
+          disabled: true
+  enable:
+    - bodyclose
+    - errcheck
+    - errorlint
+    - gosec
+    - govet
+    - ineffassign
+    - misspell
+    - nilerr
+    - noctx
+    - nolintlint
+    - revive
+    - staticcheck
+    - unconvert
+    - unused
+  exclusions:
+    generated: strict
+    rules:
+      - path: _test\.go
+        linters:
+          - gosec
+          - noctx
+      - path: internal/api/openapi/types.gen.go
+        linters:
+          - errcheck
+          - gosec
+          - revive
+          - staticcheck
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0

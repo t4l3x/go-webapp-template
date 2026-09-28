@@ -1,0 +1,43 @@
+name: go-webapp-template-test
+
+services:
+  postgres:
+    container_name: go-webapp-template-test-postgres
+    image: postgres:16-alpine
+
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: go_webapp_template_test
+
+    ports:
+      - "5434:5432"
+
+    tmpfs:
+      - /var/lib/postgresql/data
+
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d go_webapp_template_test"]
+      interval: 2s
+      timeout: 3s
+      retries: 10
+
+  # A Redis dedicated to the integration suite, on its own port and
+  # backed by tmpfs. Separate from the development instance on purpose:
+  # limiter tests need to delete the keys they create, and doing that
+  # against a shared Redis would wipe a developer's running state.
+  redis:
+    container_name: go-webapp-template-test-redis
+    image: redis:8.2-alpine
+
+    ports:
+      - "6380:6379"
+
+    tmpfs:
+      - /data
+
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 3s
+      retries: 10
